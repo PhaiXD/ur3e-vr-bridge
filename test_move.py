@@ -11,18 +11,19 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 ROBOT_IP = "192.168.1.20"
 
+# กำหนดระยะทางที่จะขยับต่อการกด 1 ครั้ง (0.01 เมตร = 1 เซนติเมตร)
+STEP = 0.01
+
 # ==================== UR3e Specifications ====================
 # DH Parameters (มิลลิเมตร): d1=151.9, a2=243.6, a3=213.2, d4=131.0, d5=85.0, d6=92.1
 # Max reach: 500 mm (0.5 m)
 # Max joint speed: 180°/s (joints 1-3), 360°/s (joints 4-6)
 # Max TCP speed: 1 m/s
 
-# ==================== ความเร็วแบบ Smooth (Real-time Jogging) ====================
-SMOOTH_SPEED = 0.15     # m/s   ความเร็วเชิงเส้นต่อเนื่อง (Smooth & แม่นยำ)
-SMOOTH_ACCEL = 0.5      # m/s²  อัตราเร่งให้นุ่มนวล ไม่กระตุก
-STOP_ACCEL = 1.5        # m/s²  อัตราการชะลอหยุดเมื่อปล่อยปุ่ม
-J_SPEED = 1.57          # rad/s (50% ของ max joint speed ~3.14 rad/s สำหรับ moveJ)
-J_ACCEL = 1.57          # rad/s²
+# ==================== ความเร็วและการเคลื่อนที่ (moveJ_IK) ====================
+# moveJ_IK เคลื่อนที่ใน Joint Space จึงใช้หน่วยความเร็วข้อต่อ (rad/s)
+J_SPEED = 1.05          # rad/s (~60°/s หรือ ~50% ของ max joint speed)
+J_ACCEL = 1.40          # rad/s² อัตราเร่งข้อต่อให้นุ่มนวล ไม่กระชาก
 
 # ==================== การตั้งค่า Gripper (Robotiq) ====================
 GRIPPER_PORT = 63352
@@ -77,7 +78,7 @@ JOINT_NAMES = ["Base", "Shoulder", "Elbow", "Wrist 1", "Wrist 2", "Wrist 3"]
 class RobotiqGripper:
     """
     ควบคุม Robotiq Gripper (เช่น 2F-85 / 2F-140 / Hand-E) ผ่านพอร์ต 63352 ของ UR
-    รองรับการควบคุมแบบ Smooth: กดค้างเพื่อเคลื่อนที่ต่อเนื่อง ปล่อยปุ่มเพื่อหยุดทันที
+    รองรับการกดค้างเพื่อเคลื่อนที่ต่อเนื่อง ปล่อยปุ่มเพื่อหยุดทันที
     """
     def __init__(self, ip=ROBOT_IP, port=GRIPPER_PORT):
         self.ip = ip
@@ -274,6 +275,52 @@ def check_joint_safety(q_current):
     return len(violations) == 0, violations, warnings
 
 
+def isPoseReachable(rtde_c, pose, qnear=None):
+    """
+    ตรวจสอบว่าพิกัดเป้าหมาย (X, Y, Z, Rx, Ry, Rz) สามารถไปถึงได้จริงและปลอดภัยหรือไม่ (4 ระดับ)
+    1. ตรวจสอบขอบเขต Cartesian ทั่วไป (Workspace Safety Boundaries)
+    2. ตรวจสอบผ่าน Controller Safety Limits (isPoseWithinSafetyLimits)
+    3. ตรวจสอบว่ามีคำตอบ Inverse Kinematics ใกล้กับท่าปัจจุบันหรือไม่ (getInverseKinematicsHasSolution)
+    4. คำนวณ Joint Target ล่วงหน้า แล้วตรวจว่าไม่ละเมิด Joint Limits / Singularity
+    คืนค่า: (is_reachable, reason)
+    """
+    # ระดับ 1: ขอบเขตระยะ Cartesian
+    cart_safe, cart_reason = check_cartesian_safety(pose)
+    if not cart_safe:
+        return False, f"🛑 [Cartesian] {cart_reason}"
+
+    # ระดับ 2: Safety Limits และ Planes ของ UR Controller
+    try:
+        if not rtde_c.isPoseWithinSafetyLimits(pose):
+            return False, "🛑 [Safety Limits] พิกัดอยู่นอก Safety Limits หรือข้อจำกัดของ Controller"
+    except Exception as e:
+        return False, f"⚠️ ไม่สามารถตรวจสอบ Safety Limits: {e}"
+
+    # ระดับ 3: ตรวจสอบว่ามีคำตอบ IK ใกล้เคียงท่าปัจจุบัน (ป้องกันแขนหมุนตลบ)
+    try:
+        if qnear is not None:
+            has_sol = rtde_c.getInverseKinematicsHasSolution(pose, qnear)
+        else:
+            has_sol = rtde_c.getInverseKinematicsHasSolution(pose)
+
+        if not has_sol:
+            return False, "🛑 [IK Solver] ไม่มีคำตอบ Inverse Kinematics ที่ปลอดภัยใกล้เคียงท่าปัจจุบัน (เสี่ยงข้อต่อขัดกัน)"
+    except Exception as e:
+        return False, f"⚠️ ไม่สามารถตรวจสอบ IK Solution: {e}"
+
+    # ระดับ 4: ตรวจสอบองศาข้อต่อที่คำนวณได้ล่วงหน้า
+    try:
+        target_q = rtde_c.getInverseKinematics(pose, qnear if qnear else [])
+        if target_q and len(target_q) == 6:
+            joint_safe, violations, _ = check_joint_safety(target_q)
+            if not joint_safe:
+                return False, f"🛑 [Joint Safety] องศาข้อต่อที่คำนวณได้เสี่ยงชนตัวเอง: {', '.join(violations)}"
+    except Exception as e:
+        return False, f"⚠️ ไม่สามารถคำนวณ Target Joint: {e}"
+
+    return True, "OK"
+
+
 def check_joint_jump(q_before, q_after):
     """
     ตรวจจับการหมุนตลบกะทันหัน (Joint Jump / Configuration Flip)
@@ -347,19 +394,21 @@ if __name__ == "__main__":
 
         print("\n✅ เชื่อมต่อระบบสำเร็จ!")
         print("==================================================")
-        print("🚀 โหมดควบคุมแบบ Smooth (Real-time Continuous Jogging):")
-        print(f"   • ความเร็วเคลื่อนที่แขน: {SMOOTH_SPEED} m/s (speedL ต่อเนื่อง)")
-        print(f"   • อัตราเร่ง/เบรก: เร่ง {SMOOTH_ACCEL} m/s², ชะลอหยุด {STOP_ACCEL} m/s² (ไร้การกระตุก)")
+        print("🛡️ ระบบความปลอดภัยและ Kinematics สำหรับ UR3e:")
+        print("   • การเคลื่อนที่: moveJ_IK (Linear in Joint Space)")
+        print("     - รับพิกัด X, Y, Z และคำนวณ IK ล่วงหน้า")
+        print("     - บิดข้อต่อทั้ง 6 พร้อมกัน นุ่มนวล ไร้ Singularity และไม่กระชาก")
+        print("   • Reachability Check: isPoseReachable() ตรวจสอบ 4 ระดับก่อนขยับทุกครั้ง")
         print(f"   • Cartesian Bounds: r_xy=[{MIN_BASE_RADIUS}m, {MAX_REACH_XY}m], Z=[{MIN_Z}m, {MAX_Z}m]")
-        print(f"   • Joint Protection: ระบบหยุดอัตโนมัติเมื่อใกล้ขีดจำกัดข้อต่อ")
-        print(f"   • Gripper: กดค้างเพื่อหนีบ/คลายต่อเนื่อง ปล่อยปุ่มเพื่อหยุดทันที")
+        print("   • Joint Limits: ข้อศอกห้ามเหยียดตรง, ข้อมือห้ามผ่าน 0°")
+        print("   • Gripper: กดค้างเพื่อหนีบ/คลาย ปล่อยปุ่มเพื่อหยุดทันที (พร้อมระบบกันวัตถุแตก)")
         print("==================================================")
-        print("🎮 การควบคุม (กดค้าง = ไหลต่อเนื่อง, ปล่อย = ชะลอหยุดนุ่มนวล):")
+        print("🎮 การควบคุม:")
         print("   [W] / [S]        : เดินหน้า / ถอยหลัง (แกน X)")
         print("   [A] / [D]        : ซ้าย / ขวา (แกน Y)")
         print("   [Space] / [Ctrl] : ขึ้น / ลง (แกน Z)")
-        print("   [=]              : กดค้างเพื่อหนีบต่อเนื่อง (ปล่อย = หยุดทันที)")
-        print("   [-]              : กดค้างเพื่อคลายต่อเนื่อง (ปล่อย = หยุดทันที)")
+        print("   [=]              : Gripper หนีบเข้า (กดค้าง / ปล่อยหยุด)")
+        print("   [-]              : Gripper คลายออก (กดค้าง / ปล่อยหยุด)")
         print("   [H]              : กลับท่า Safe Home (moveJ)")
         print("   [Q]              : ออกจากโปรแกรม")
         print("==================================================")
@@ -385,8 +434,8 @@ if __name__ == "__main__":
 
         print("\n✅ พร้อมรับคำสั่ง! คลิกที่หน้าต่าง CMD แล้วกดปุ่มควบคุมได้เลย\n")
 
-        # ตัวแปรสถานะการเคลื่อนที่แบบ Smooth
-        was_moving_arm = False
+        # ตัวแปรสถานะ
+        prev_q = rtde_r.getActualQ()
         gripper_moving_close = False
         gripper_moving_open = False
         prev_h_pressed = False
@@ -399,101 +448,32 @@ if __name__ == "__main__":
             # 1. ตรวจสอบ Protective Stop ก่อน
             if check_protective_stop(rtde_r):
                 print("\n🛑 ตรวจพบ PROTECTIVE STOP!")
-                if was_moving_arm:
-                    try:
-                        rtde_c.speedStop(STOP_ACCEL)
-                    except Exception:
-                        pass
-                    was_moving_arm = False
                 recover_from_protective_stop(rtde_c, rtde_r)
                 print("   กด [H] เพื่อกลับท่า Safe Home\n")
                 time.sleep(0.5)
+                prev_q = rtde_r.getActualQ()
                 continue
 
             # 2. อ่านตำแหน่งและองศาปัจจุบัน
             current_pose = rtde_r.getActualTCPPose()
             current_q = rtde_r.getActualQ()
+            target_pose = current_pose.copy()
+            moved = False
 
             # 3. ตรวจสอบปุ่มออกจากโปรแกรม
             if keyboard.is_pressed('q'):
                 print("\nกำลังออกจากโปรแกรม...")
-                if was_moving_arm:
-                    rtde_c.speedStop(STOP_ACCEL)
                 break
 
             # 4. ตรวจสอบปุ่มกลับ Home (Edge Trigger)
             h_pressed = keyboard.is_pressed('h')
             if h_pressed and not prev_h_pressed:
-                if was_moving_arm:
-                    rtde_c.speedStop(STOP_ACCEL)
-                    was_moving_arm = False
                 move_to_safe_home(rtde_c, rtde_r)
+                prev_q = rtde_r.getActualQ()
                 time.sleep(0.1)
             prev_h_pressed = h_pressed
 
-            # 5. คำนวณความเร็วเชิงเส้น (Linear Velocity) จากการกดปุ่ม
-            vx = 0.0
-            vy = 0.0
-            vz = 0.0
-
-            if keyboard.is_pressed('w'):
-                vx += SMOOTH_SPEED
-            if keyboard.is_pressed('s'):
-                vx -= SMOOTH_SPEED
-
-            if keyboard.is_pressed('a'):
-                vy += SMOOTH_SPEED
-            if keyboard.is_pressed('d'):
-                vy -= SMOOTH_SPEED
-
-            if keyboard.is_pressed('space'):
-                vz += SMOOTH_SPEED
-            if keyboard.is_pressed('ctrl'):
-                vz -= SMOOTH_SPEED
-
-            # 6. ระบบป้องกันขอบเขตแบบ Real-time (Cartesian Boundary Clamping)
-            # ตรวจสอบทิศทางไปข้างหน้าล่วงหน้า 0.15 วินาที
-            LOOKAHEAD = 0.15
-            pred_x = current_pose[0] + vx * LOOKAHEAD
-            pred_y = current_pose[1] + vy * LOOKAHEAD
-            pred_z = current_pose[2] + vz * LOOKAHEAD
-
-            # ป้องกันแกน Z (ห้ามชนโต๊ะ หรือสูงเกินไป)
-            if pred_z < MIN_Z and vz < 0:
-                vz = 0.0
-            elif pred_z > MAX_Z and vz > 0:
-                vz = 0.0
-
-            # ป้องกันระยะเอื้อมแนวนอน (ห้ามเอื้อมเกิน reach และห้ามชนฐาน)
-            pred_r = math.hypot(pred_x, pred_y)
-            cur_r = math.hypot(current_pose[0], current_pose[1])
-            if pred_r > MAX_REACH_XY and pred_r > cur_r:
-                vx = 0.0
-                vy = 0.0
-            elif pred_r < MIN_BASE_RADIUS and pred_r < cur_r:
-                vx = 0.0
-                vy = 0.0
-
-            # ป้องกันขีดจำกัดมุมข้อต่อ (Joint Limit Protection)
-            joint_safe, joint_violations, _ = check_joint_safety(current_q)
-            if not joint_safe:
-                vx = 0.0
-                vy = 0.0
-                vz = 0.0
-
-            # 7. สั่งเคลื่อนที่แขนกลแบบ speedL ต่อเนื่อง (Smooth Velocity Control)
-            is_moving_now = (vx != 0.0 or vy != 0.0 or vz != 0.0)
-
-            if is_moving_now:
-                # ส่งความเร็ว xd ไปยัง controller อย่างต่อเนื่อง ไม่มีการเบรกหยุดระหว่างทาง
-                rtde_c.speedL([vx, vy, vz, 0.0, 0.0, 0.0], SMOOTH_ACCEL, 0.0)
-                was_moving_arm = True
-            elif was_moving_arm:
-                # เมื่อปล่อยปุ่มทั้งหมด สั่งให้ชะลอหยุดอย่างนุ่มนวล
-                rtde_c.speedStop(STOP_ACCEL)
-                was_moving_arm = False
-
-            # 8. ควบคุม Gripper แบบ Smooth (กดค้าง = เคลื่อนที่ต่อเนื่อง, ปล่อย = หยุดทันที)
+            # 5. ควบคุม Gripper (กดค้าง = เคลื่อนที่ต่อเนื่อง, ปล่อย = หยุดทันที)
             eq_pressed = keyboard.is_pressed('=') or keyboard.is_pressed('+')
             minus_pressed = keyboard.is_pressed('-') or keyboard.is_pressed('_')
 
@@ -508,16 +488,73 @@ if __name__ == "__main__":
                     gripper_moving_open = True
                     gripper_moving_close = False
             else:
-                # ปล่อยปุ่มทั้งสอง -> สั่งหยุดกริปเปอร์อยู่กับที่
                 if gripper_moving_close or gripper_moving_open:
                     gripper.stop()
                     gripper_moving_close = False
                     gripper_moving_open = False
-                    # แสดงผลตำแหน่งและแรงบีบที่จุดหยุด
                     pos, _, cou, f_n, desc = gripper.get_status()
                     gripper._print_gauge(pos, f_n, cou, desc)
 
-            # 9. พิมพ์ค่า Force ตลอดเวลา (Continuous Force Monitoring @ 5 Hz)
+            # 6. ตรวจสอบปุ่มทิศทาง (กำหนดเป้าหมาย X, Y, Z)
+            if keyboard.is_pressed('w'):
+                target_pose[0] += STEP
+                moved = True
+            elif keyboard.is_pressed('s'):
+                target_pose[0] -= STEP
+                moved = True
+
+            if keyboard.is_pressed('a'):
+                target_pose[1] += STEP
+                moved = True
+            elif keyboard.is_pressed('d'):
+                target_pose[1] -= STEP
+                moved = True
+
+            if keyboard.is_pressed('space'):
+                target_pose[2] += STEP
+                moved = True
+            elif keyboard.is_pressed('ctrl'):
+                target_pose[2] -= STEP
+                moved = True
+
+            if moved:
+                # ------------------------------------------------------------
+                # ด่านสำคัญ: ตรวจสอบว่าพิกัดเป้าหมายทำได้จริงไหม (isPoseReachable)
+                # ตรวจสอบทั้ง Cartesian bounds, Controller Safety, และ IK Solution
+                # ------------------------------------------------------------
+                is_reachable, reason = isPoseReachable(rtde_c, target_pose, current_q)
+                if not is_reachable:
+                    print(reason)
+                    time.sleep(0.05)
+                    continue
+
+                # ------------------------------------------------------------
+                # สั่งเคลื่อนที่ด้วย moveJ_IK (Linear in Joint Space)
+                # คำนวณ Inverse Kinematics ล่วงหน้า แล้วหมุนทั้ง 6 ข้อต่อพร้อมกัน
+                # นุ่มนวล ปลอดภัยจาก Singularity และข้อต่อไม่หมุนกระชาก
+                # ------------------------------------------------------------
+                try:
+                    rtde_c.moveJ_IK(target_pose, J_SPEED, J_ACCEL)
+                except Exception as e:
+                    print(f"❌ moveJ_IK ล้มเหลว: {e}")
+                    print("   กด [H] เพื่อกลับท่า Safe Home")
+                    time.sleep(0.2)
+                    continue
+
+                # อ่านสถานะหลังเคลื่อนที่
+                actual_q = rtde_r.getActualQ()
+                actual_pose = rtde_r.getActualTCPPose()
+
+                # ตรวจจับ Joint Jump (การหมุนตลบกะทันหัน)
+                jump_safe, jump_msg = check_joint_jump(prev_q, actual_q)
+                if not jump_safe:
+                    print(f"⚠️ [Joint Jump] ตรวจพบ: {jump_msg}")
+                    prev_q = actual_q
+                    continue
+
+                prev_q = actual_q
+
+            # 7. พิมพ์ค่า Force ตลอดเวลา (Continuous Force Monitoring @ 5 Hz)
             current_time = time.time()
             if current_time - last_force_print >= FORCE_PRINT_INTERVAL:
                 force = rtde_r.getActualTCPForce()
@@ -528,7 +565,6 @@ if __name__ == "__main__":
                 print(f"⚡ [force] TCP={[round(x, 2) for x in force[:3]]} (|F|={f_norm:.2f} N) | Gripper={grip_force:5.1f} N ({grip_desc}) | Pos=[{current_pose[0]:.3f}, {current_pose[1]:.3f}, {current_pose[2]:.3f}]")
                 last_force_print = current_time
 
-            # รอบลูป 50 Hz สำหรับการตอบสนองที่ลื่นไหลระดับ 20 ms
             time.sleep(0.02)
 
     except Exception as e:
@@ -538,9 +574,5 @@ if __name__ == "__main__":
         if 'gripper' in locals():
             gripper.disconnect()
         if 'rtde_c' in locals():
-            try:
-                rtde_c.speedStop(STOP_ACCEL)
-            except Exception:
-                pass
             rtde_c.stopScript()
             print("ปิดการเชื่อมต่อแล้ว")
