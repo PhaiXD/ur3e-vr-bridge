@@ -466,6 +466,10 @@ if __name__ == "__main__":
         prev_minus_pressed = False
         prev_h_pressed = False
 
+        # ตัวแปรจับเวลาสำหรับ print force ตลอดเวลา
+        last_force_print = 0.0
+        FORCE_PRINT_INTERVAL = 0.2  # พิมพ์ทุกๆ 0.2 วินาที (5 Hz)
+
         while True:
             # ตรวจสอบ Protective Stop ก่อน
             if check_protective_stop(rtde_r):
@@ -481,6 +485,16 @@ if __name__ == "__main__":
             current_q = rtde_r.getActualQ()
             target_pose = current_pose.copy()
             moved = False
+
+            # === พิมพ์ค่า Force ตลอดเวลา (Continuous Force Monitoring) ===
+            current_time = time.time()
+            if current_time - last_force_print >= FORCE_PRINT_INTERVAL:
+                force = rtde_r.getActualTCPForce()
+                f_norm = math.sqrt(force[0]**2 + force[1]**2 + force[2]**2)
+                _, _, _, grip_force, grip_desc = gripper.get_status()
+
+                print(f"⚡ [force] TCP={[round(x, 2) for x in force]} (|F|={f_norm:.2f} N) | Gripper={grip_force:5.1f} N ({grip_desc})")
+                last_force_print = current_time
 
             # === ตรวจสอบปุ่ม Gripper (Edge Trigger: กด 1 ครั้ง = ปรับ 1 สเต็ป) ===
             eq_pressed = keyboard.is_pressed('=') or keyboard.is_pressed('+')
@@ -585,8 +599,11 @@ if __name__ == "__main__":
                 # ============================================================
                 post_safe, post_violations, post_warnings = check_joint_safety(actual_q)
 
-                # แสดงพิกัด
-                print(f"📍 X={actual_pose[0]:.3f}, Y={actual_pose[1]:.3f}, Z={actual_pose[2]:.3f}", end="")
+                # แสดงพิกัดและค่าแรง
+                force = rtde_r.getActualTCPForce()
+                f_norm = math.sqrt(force[0]**2 + force[1]**2 + force[2]**2)
+                _, _, _, grip_force, _ = gripper.get_status()
+                print(f"📍 X={actual_pose[0]:.3f}, Y={actual_pose[1]:.3f}, Z={actual_pose[2]:.3f} | ⚡ |F|={f_norm:.2f}N, Grip={grip_force:.1f}N", end="")
 
                 if post_warnings:
                     print(f"  ⚡{', '.join(post_warnings)}", end="")
