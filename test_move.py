@@ -1,8 +1,13 @@
 import math
+import socket
+import sys
 import time
 import keyboard
 import rtde_control
 import rtde_receive
+
+# ตั้งค่า stdout เป็น utf-8 เพื่อรองรับภาษาไทยและ emoji บน Windows Console
+sys.stdout.reconfigure(encoding="utf-8")
 
 ROBOT_IP = "192.168.1.20"
 
@@ -20,6 +25,11 @@ SPEED = 0.5       # m/s  (50% ของ max TCP speed 1 m/s)
 ACCEL = 0.5       # m/s² (50% ของ max)
 J_SPEED = 1.57    # rad/s (50% ของ max joint speed ~3.14 rad/s)
 J_ACCEL = 1.57    # rad/s²
+
+# ==================== การตั้งค่า Gripper (Robotiq) ====================
+GRIPPER_PORT = 63352
+GRIPPER_SPEED = 128     # 50% ของความเร็วสูงสุด (ช่วง 0-255)
+GRIPPER_FORCE = 128     # 50% ของแรงหนีบสูงสุด (ช่วง 0-255) ป้องกันการบีบวัตถุแตก
 
 # ==================== ท่า Home ของ UR3e (จาก Datasheet) ====================
 # [Base, Shoulder, Elbow, Wrist1, Wrist2, Wrist3] ในหน่วย radian
@@ -64,6 +74,85 @@ MAX_JOINT_JUMP = math.radians(15)  # ถ้าข้อต่อใดหมุ�
 
 # ==================== ชื่อข้อต่อ ====================
 JOINT_NAMES = ["Base", "Shoulder", "Elbow", "Wrist 1", "Wrist 2", "Wrist 3"]
+
+
+class RobotiqGripper:
+    """
+    ควบคุม Robotiq Gripper (เช่น 2F-85 / 2F-140 / Hand-E) ผ่านพอร์ต 63352 ของ UR
+    """
+    def __init__(self, ip=ROBOT_IP, port=GRIPPER_PORT):
+        self.ip = ip
+        self.port = port
+        self.sock = None
+        self.connected = False
+        self.connect()
+
+    def connect(self):
+        try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.settimeout(2.0)
+            self.sock.connect((self.ip, self.port))
+            # เปิดการทำงาน Gripper (Activate)
+            self._send("SET ACT 1")
+            self._send("SET GTO 1")
+            self._send(f"SET SPE {GRIPPER_SPEED}")
+            self._send(f"SET FOR {GRIPPER_FORCE}")
+            self.connected = True
+            print("✅ เชื่อมต่อ Robotiq Gripper สำเร็จ (Port 63352)")
+        except Exception as e:
+            print(f"⚠️ ไม่สามารถเชื่อมต่อ Gripper: {e}")
+            self.sock = None
+            self.connected = False
+
+    def _send(self, cmd):
+        if not self.connected or not self.sock:
+            return ""
+        try:
+            self.sock.sendall((cmd + "\n").encode())
+            res = self.sock.recv(1024).decode().strip()
+            return res
+        except Exception as e:
+            print(f"⚠️ Gripper error: {e}")
+            return ""
+
+    def close(self):
+        """ สั่ง Gripper หนีบเข้า (Grip) ความเร็ว 50% """
+        if not self.connected:
+            print("⚠️ Gripper ไม่ได้เชื่อมต่อ")
+            return
+        self._send(f"SET SPE {GRIPPER_SPEED}")
+        self._send(f"SET FOR {GRIPPER_FORCE}")
+        self._send("SET POS 255")
+        print(f"🗜️ Gripper: กำลังหนีบ (Closing...) [ความเร็ว 50%]")
+
+    def open(self):
+        """ สั่ง Gripper คลายออก (Release) ความเร็ว 50% """
+        if not self.connected:
+            print("⚠️ Gripper ไม่ได้เชื่อมต่อ")
+            return
+        self._send(f"SET SPE {GRIPPER_SPEED}")
+        self._send("SET POS 0")
+        print(f"👐 Gripper: กำลังคลายออก (Opening...) [ความเร็ว 50%]")
+
+    def get_pos(self):
+        if not self.connected:
+            return None
+        res = self._send("GET POS")
+        try:
+            parts = res.split()
+            if len(parts) >= 2:
+                return int(parts[1])
+        except Exception:
+            pass
+        return None
+
+    def disconnect(self):
+        if self.sock:
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+            self.connected = False
 
 
 def check_cartesian_safety(pose):
@@ -195,20 +284,24 @@ print(f"กำลังเชื่อมต่อไปที่หุ่นย
 try:
     rtde_c = rtde_control.RTDEControlInterface(ROBOT_IP)
     rtde_r = rtde_receive.RTDEReceiveInterface(ROBOT_IP)
+    gripper = RobotiqGripper(ROBOT_IP, GRIPPER_PORT)
 
-    print("\n✅ เชื่อมต่อสำเร็จ!")
+    print("\n✅ เชื่อมต่อระบบสำเร็จ!")
     print("==================================================")
     print("🛡️ ระบบป้องกัน Self-Collision สำหรับ UR3e:")
     print(f"   • Cartesian Bounds: r_xy=[{MIN_BASE_RADIUS}m, {MAX_REACH_XY}m], Z=[{MIN_Z}m, {MAX_Z}m]")
     print(f"   • Joint Limits: ข้อศอกห้ามเหยียดตรง, ข้อมือห้ามผ่าน 0°")
     print(f"   • Joint Jump Detection: บล็อกการหมุนตลบ > {math.degrees(MAX_JOINT_JUMP):.0f}°/step")
     print(f"   • Protective Stop Recovery: ตรวจจับอัตโนมัติ")
-    print(f"   • ความเร็ว: 50% (TCP={SPEED} m/s, Joint={math.degrees(J_SPEED):.0f}°/s)")
+    print(f"   • ความเร็วแขน: 50% (TCP={SPEED} m/s, Joint={math.degrees(J_SPEED):.0f}°/s)")
+    print(f"   • ความเร็ว Gripper: 50% (SPE={GRIPPER_SPEED}/255)")
     print("==================================================")
     print("🎮 การควบคุม:")
     print("   [W] / [S]        : เดินหน้า / ถอยหลัง (แกน X)")
     print("   [A] / [D]        : ซ้าย / ขวา (แกน Y)")
     print("   [Space] / [Ctrl] : ขึ้น / ลง (แกน Z)")
+    print("   [=]              : Gripper หนีบ (ความเร็ว 50%)")
+    print("   [-]              : Gripper คลายออก (ความเร็ว 50%)")
     print("   [H]              : กลับท่า Safe Home")
     print("   [Q]              : ออกจากโปรแกรม")
     print("==================================================")
@@ -237,6 +330,11 @@ try:
     # เก็บค่า Q ก่อนหน้า สำหรับตรวจจับ Joint Jump
     prev_q = rtde_r.getActualQ()
 
+    # ตัวแปรบันทึกสถานะปุ่ม (Edge Trigger)
+    prev_eq_pressed = False
+    prev_minus_pressed = False
+    prev_h_pressed = False
+
     while True:
         # ตรวจสอบ Protective Stop ก่อน
         if check_protective_stop(rtde_r):
@@ -253,13 +351,26 @@ try:
         target_pose = current_pose.copy()
         moved = False
 
+        # === ตรวจสอบปุ่ม Gripper (Edge Trigger ป้องกันการส่งซ้ำ) ===
+        eq_pressed = keyboard.is_pressed('=') or keyboard.is_pressed('+')
+        minus_pressed = keyboard.is_pressed('-') or keyboard.is_pressed('_')
+
+        if eq_pressed and not prev_eq_pressed:
+            gripper.close()
+        prev_eq_pressed = eq_pressed
+
+        if minus_pressed and not prev_minus_pressed:
+            gripper.open()
+        prev_minus_pressed = minus_pressed
+
         # === ตรวจสอบปุ่มพิเศษ ===
-        # กลับ Home
-        if keyboard.is_pressed('h'):
+        # กลับ Home (Edge Trigger)
+        h_pressed = keyboard.is_pressed('h')
+        if h_pressed and not prev_h_pressed:
             move_to_safe_home(rtde_c, rtde_r)
             prev_q = rtde_r.getActualQ()
-            time.sleep(0.3)
-            continue
+            time.sleep(0.1)
+        prev_h_pressed = h_pressed
 
         # ออกจากโปรแกรม
         if keyboard.is_pressed('q'):
@@ -360,12 +471,15 @@ try:
 
             # อัพเดต Q ก่อนหน้า
             prev_q = actual_q
-            time.sleep(0.05)
+
+        time.sleep(0.05)
 
 except Exception as e:
     print(f"\n❌ เกิดข้อผิดพลาด: {e}")
 
 finally:
+    if 'gripper' in locals():
+        gripper.disconnect()
     if 'rtde_c' in locals():
         rtde_c.stopScript()
         print("ปิดการเชื่อมต่อแล้ว")
