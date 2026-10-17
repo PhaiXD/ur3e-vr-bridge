@@ -1,6 +1,7 @@
 import math
 import socket
 import sys
+import threading
 import time
 import keyboard
 import rtde_control
@@ -86,6 +87,8 @@ class RobotiqGripper:
         self.connected = False
         self.contact_detected = False
         self.is_moving = False
+        self.lock = threading.Lock()
+        self._last_target_pos = -1
         self.connect()
 
     def connect(self):
@@ -171,12 +174,13 @@ class RobotiqGripper:
     def _send(self, cmd):
         if not self.connected or not self.sock:
             return ""
-        try:
-            self.sock.sendall((cmd + "\n").encode())
-            res = self.sock.recv(1024).decode().strip()
-            return res
-        except Exception:
-            return ""
+        with self.lock:
+            try:
+                self.sock.sendall((cmd + "\n").encode())
+                res = self.sock.recv(1024).decode().strip()
+                return res
+            except Exception:
+                return ""
 
     def get_status(self):
         """
@@ -289,16 +293,20 @@ class RobotiqGripper:
         """
         ตั้งค่าตำแหน่ง Gripper แบบเจาะจง (0 = เปิดสุด, 255 = ปิดสุด)
         เหมาะสำหรับควบคุมตามระยะห่างนิ้วมือจาก VR (Pinch Tracking)
+        ส่งคำสั่ง SET POS ตรงๆ แบบ Latency ต่ำสุด (~2ms)
         """
-        if not self.connected:
+        if not self.connected or not self.sock:
             return
         if not self.is_activated():
             if not self.ensure_activated():
                 return
         pos = max(0, min(255, int(pos)))
-        self._send("SET GTO 1")
-        self._send(f"SET SPE {GRIPPER_SPEED}")
-        self._send(f"SET FOR {GRIPPER_FORCE}")
+
+        # ป้องกันการส่งซ้ำถ้าตำแหน่งเดิม เพื่อลด network round-trips
+        if abs(self._last_target_pos - pos) < 2:
+            return
+        self._last_target_pos = pos
+
         self._send(f"SET POS {pos}")
         self.is_moving = True
 
