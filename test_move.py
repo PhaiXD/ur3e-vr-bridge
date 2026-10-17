@@ -30,16 +30,16 @@ GRIPPER_PORT = 63352
 GRIPPER_SPEED = 128     # 50% ของความเร็วสูงสุด (ช่วง 0-255)
 GRIPPER_FORCE = 128     # 50% ของแรงหนีบสูงสุด (ช่วง 0-255) ป้องกันการบีบวัตถุแตก
 
-# ==================== ท่า Home ของ UR3e (จาก Datasheet) ====================
+# ==================== ท่า Home ของ UR3e ====================
 # [Base, Shoulder, Elbow, Wrist1, Wrist2, Wrist3] ในหน่วย radian
-# ท่า Default: [0°, -90°, 0°, -90°, 0°, 0°]
-# !! แต่ท่านี้มี Elbow=0° และ Wrist2=0° ซึ่งอยู่ตรง Singularity !!
-# ดังนั้นเราใช้ "Safe Home" ที่งอข้อศอกออก เพื่อหลบ Singularity
+# ท่า "Forward-Facing Home": Gripper ชี้ตรงไปข้างหน้า (+X) พร้อมหยิบจับ
+# กฎ: Shoulder + Elbow + Wrist1 = -180° → tool frame ชี้แนวนอนไปข้างหน้า
+# เลือกมุมที่มี margin >= 15° จากทุก joint limit
 HOME_Q = [
     math.radians(0),      # Base:     0°      (หันหน้าตรง)
-    math.radians(-90),    # Shoulder: -90°    (แขนบนอยู่แนวนอน)
-    math.radians(-90),    # Elbow:    -90°    (งอข้อศอก 90° → หลบ Singularity!)
-    math.radians(-90),    # Wrist 1:  -90°    (ข้อมือชี้ลง)
+    math.radians(-80),    # Shoulder: -80°    (แขนบนเอียงขึ้นเล็กน้อย)
+    math.radians(-85),    # Elbow:    -85°    (งอข้อศอก หลบ Singularity)
+    math.radians(-15),    # Wrist 1:  -15°    (ปลายข้อมือชี้ตรงไปข้างหน้า)
     math.radians(90),     # Wrist 2:  +90°    (หลบ Wrist Singularity!)
     math.radians(0),      # Wrist 3:  0°
 ]
@@ -59,7 +59,7 @@ JOINT_LIMITS = [
     (-170, 170),     # J1 Base:     จำกัดการหมุนฐาน ป้องกันสายพันตัว
     (-170, -10),     # J2 Shoulder: ป้องกันแขนบนพับขึ้นสุดหรือลงสุดจนชนฐาน
     (-160, -10),     # J3 Elbow:    บังคับให้ข้อศอกงออยู่เสมอ (ห้ามเหยียดตรง!)
-    (-170, 0),       # J4 Wrist 1:  จำกัดเพื่อป้องกันข้อมือม้วนชนท่อนแขน
+    (-170, 10),      # J4 Wrist 1:  จำกัดเพื่อป้องกันข้อมือม้วนชนท่อนแขน (ขยายถึง +10° สำหรับท่ามองตรง)
     (10, 170),       # J5 Wrist 2:  ห้ามผ่าน 0° เด็ดขาด (Wrist Singularity!)
     (-170, 170),     # J6 Wrist 3:  ค่อนข้างอิสระ
 ]
@@ -483,7 +483,7 @@ def move_to_safe_home(rtde_c, rtde_r):
     เคลื่อนที่ไปท่า Safe Home ด้วย moveJ (Joint Space)
     ใช้ moveJ เพราะปลอดภัยกว่า moveL โดยเฉพาะเมื่ออยู่ใกล้ Singularity
     """
-    print("🏠 กำลังกลับท่า Safe Home (moveJ)...")
+    print("🏠 กำลังกลับท่า Forward Home (moveJ)...")
     print(f"   เป้าหมาย (deg): [{', '.join([f'{math.degrees(q):.0f}' for q in HOME_Q])}]")
 
     try:
@@ -510,10 +510,25 @@ if __name__ == "__main__":
         rtde_r = rtde_receive.RTDEReceiveInterface(ROBOT_IP)
         gripper = RobotiqGripper(ROBOT_IP, GRIPPER_PORT)
 
+        # ตัวแปรสำหรับรับความเร็วจาก VR Hand Tracking (thread-safe)
+        vr_vel_lock = threading.Lock()
+        vr_vel = [0.0, 0.0, 0.0]
+
+        def on_vr_move(vx, vy, vz):
+            """รับค่า velocity จาก Unity VR Hand แล้วเก็บไว้ให้ main loop ใช้"""
+            with vr_vel_lock:
+                vr_vel[0] = vx
+                vr_vel[1] = vy
+                vr_vel[2] = vz
+
         # เริ่มต้น VR Bridge Server (TCP Port 5555 สำหรับเชื่อม Unity Meta Quest Hand Tracking)
         try:
             from vr_bridge_server import VRBridgeServer
-            vr_server = VRBridgeServer(host="0.0.0.0", port=5555, on_grip_callback=lambda p: gripper.set_position(p))
+            vr_server = VRBridgeServer(
+                host="0.0.0.0", port=5555,
+                on_grip_callback=lambda p: gripper.set_position(p),
+                on_move_callback=on_vr_move
+            )
             vr_server.start()
         except Exception as e:
             print(f"⚠️ ไม่สามารถเริ่ม VR Bridge Server: {e}")
@@ -523,7 +538,9 @@ if __name__ == "__main__":
         print("==================================================")
         print("🚀 โหมดควบคุมแบบ Smooth (Continuous Jogging):")
         print(f"   • แขนกล: กดค้างเพื่อไหลต่อเนื่อง ({SMOOTH_SPEED} m/s) ปล่อยปุ่ม = ชะลอหยุดนุ่มนวล")
-        print(f"   • Gripper: กดค้างเพื่อหนีบ/คลายต่อเนื่อง ปล่อยปุ่ม = หยุดทันที")
+        print(f"   • VR Hand: ขยับมือใน VR ควบคุมแขนกล (MOVE → speedL)")
+        print(f"   • Gripper: กดค้างเพื่อหนีบ/คลายต่อเนื่อง หรือ VR Pinch → Robotiq")
+        print(f"   • ท่า Home: Gripper ชี้ตรงไปข้างหน้า พร้อมหยิบจับ")
         print(f"   • Cartesian Bounds: r_xy=[{MIN_BASE_RADIUS}m, {MAX_REACH_XY}m], Z=[{MIN_Z}m, {MAX_Z}m]")
         print("   • Joint Limits: ข้อศอกห้ามเหยียดตรง, ข้อมือห้ามผ่าน 0°")
         print("   • Lookahead Safety: ตรวจสอบความปลอดภัยล่วงหน้า 0.15s ป้องกันชนโต๊ะและหลุดระยะ")
@@ -534,8 +551,9 @@ if __name__ == "__main__":
         print("   [Space] / [Ctrl] : ขึ้น / ลง (แกน Z)")
         print("   [=]              : Gripper หนีบเข้า (กดค้าง / ปล่อยหยุด)")
         print("   [-]              : Gripper คลายออก (กดค้าง / ปล่อยหยุด)")
-        print("   [H]              : กลับท่า Safe Home (moveJ)")
+        print("   [H]              : กลับท่า Forward Home (moveJ)")
         print("   [Q]              : ออกจากโปรแกรม")
+        print("   🥽 VR Hand      : ขยับมือ = แขนกลขยับตาม | หนีบนิ้ว = Gripper หนีบ")
         print("==================================================")
 
         # แสดงสถานะเริ่มต้น
@@ -628,11 +646,12 @@ if __name__ == "__main__":
                     pos, _, cou, f_n, desc = gripper.get_status()
                     gripper._print_gauge(pos, f_n, cou, desc)
 
-            # 6. คำนวณความเร็วเชิงเส้น (Linear Velocity) จากการกดปุ่มแบบ Smooth ไหลลื่น
+            # 6. คำนวณความเร็วเชิงเส้น (Linear Velocity) จากการกดปุ่มและ/หรือ VR Hand Tracking
             vx = 0.0
             vy = 0.0
             vz = 0.0
 
+            # 6a. ความเร็วจากคีย์บอร์ด (WASD + Space/Ctrl)
             if keyboard.is_pressed('w'):
                 vx += SMOOTH_SPEED
             if keyboard.is_pressed('s'):
@@ -647,6 +666,22 @@ if __name__ == "__main__":
                 vz += SMOOTH_SPEED
             if keyboard.is_pressed('ctrl'):
                 vz -= SMOOTH_SPEED
+
+            # 6b. ความเร็วจาก VR Hand Tracking (รวมกับคีย์บอร์ด)
+            # Unity ส่ง MOVE vx vy vz มาทาง TCP → เก็บใน vr_vel[]
+            with vr_vel_lock:
+                vr_vx, vr_vy, vr_vz = vr_vel[0], vr_vel[1], vr_vel[2]
+            vx += vr_vx
+            vy += vr_vy
+            vz += vr_vz
+
+            # จำกัดความเร็วรวมไม่เกิน SMOOTH_SPEED (ป้องกันเร็วเกิน)
+            speed_mag = math.sqrt(vx*vx + vy*vy + vz*vz)
+            if speed_mag > SMOOTH_SPEED:
+                scale = SMOOTH_SPEED / speed_mag
+                vx *= scale
+                vy *= scale
+                vz *= scale
 
             # ------------------------------------------------------------
             # ตรวจสอบขอบเขตความปลอดภัยล่วงหน้า 0.15 วินาที (Lookahead Safety Clamping)

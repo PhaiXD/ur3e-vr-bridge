@@ -18,18 +18,21 @@ class VRBridgeServer:
     TCP Server รับคำสั่งจาก Unity Meta Quest Hand Tracking
     - Port 5555
     - รับคำสั่ง: 'GRIP <pos>\n' (0 = เปิดสุด, 255 = ปิดสุด)
+    - รับคำสั่ง: 'MOVE <vx> <vy> <vz>\n' (ความเร็วเชิงเส้นจากมือ VR, หน่วย m/s)
     - ส่งสถานะกลับ: 'STATUS <pos> <force_n>\n'
     """
-    def __init__(self, host=DEFAULT_HOST, port=DEFAULT_PORT, on_grip_callback=None):
+    def __init__(self, host=DEFAULT_HOST, port=DEFAULT_PORT, on_grip_callback=None, on_move_callback=None):
         self.host = host
         self.port = port
         self.on_grip_callback = on_grip_callback
+        self.on_move_callback = on_move_callback
         self.server_sock = None
         self.client_sock = None
         self.running = False
         self.thread = None
         self.latest_pos = 0
         self.latest_force = 0.0
+        self.latest_vel = [0.0, 0.0, 0.0]  # vx, vy, vz จาก VR
         self.client_address = None
 
     def start(self):
@@ -123,6 +126,22 @@ class VRBridgeServer:
                                                 self.on_grip_callback(pos, force)
                                             except TypeError:
                                                 self.on_grip_callback(pos)
+                                    except ValueError:
+                                        pass
+
+                            # ประมวลผลคำสั่ง 'MOVE <vx> <vy> <vz>'
+                            # ความเร็วเชิงเส้นจากมือ VR ที่ Unity คำนวณแล้ว (หน่วย m/s)
+                            elif line.startswith("MOVE"):
+                                parts = line.split()
+                                if len(parts) >= 4:
+                                    try:
+                                        vx = float(parts[1])
+                                        vy = float(parts[2])
+                                        vz = float(parts[3])
+                                        self.latest_vel = [vx, vy, vz]
+
+                                        if self.on_move_callback:
+                                            self.on_move_callback(vx, vy, vz)
                                     except ValueError:
                                         pass
 
