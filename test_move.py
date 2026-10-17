@@ -77,18 +77,31 @@ JOINT_NAMES = ["Base", "Shoulder", "Elbow", "Wrist 1", "Wrist 2", "Wrist 3"]
 
 class RobotiqGripper:
     """
-    ควบคุม Robotiq Gripper (เช่น 2F-85 / 2F-140 / Hand-E) ผ่านพอร์ต 63352 ของ UR
-    รองรับการกดค้างเพื่อเคลื่อนที่ต่อเนื่อง ปล่อยปุ่มเพื่อหยุดทันที
+    ควบคุม Robotiq Gripper (2F-85 / 2F-140 / Hand-E) ผ่านพอร์ต 63352 ของ UR
+    ระบบ Ultra-Sensitive Force Detection & Adaptive Squeeze:
+    - ตรวจจับการสัมผัสวัตถุได้ทันทีจาก position lag (ไม่ต้องรอให้มอเตอร์อัดจนสุด)
+    - เริ่มวัดค่าและสั่งแรงบีบทันทีตั้งแต่เริ่มสัมผัส (แตะเบาๆ บีบนิดเดียว จนถึงบีบแน่นเต็มที่)
+    - รองรับทั้ง VR Hand Tracking และ Keyboard Jogging
     """
     def __init__(self, ip=ROBOT_IP, port=GRIPPER_PORT):
         self.ip = ip
         self.port = port
         self.sock = None
         self.connected = False
+        self.actual_pos = 0
+        self.prev_actual_pos = 0
+        self.pos_stall_time = 0.0
+        self._last_status_time = time.time()
         self.contact_detected = False
+        self.contact_pos = None
+        self.current_for = 25        # แรงเริ่มต้นนุ่มนวล (~35 N)
+        self.measured_force_n = 0.0
+        self.status_desc = "ไม่ได้เชื่อมต่อ"
         self.is_moving = False
         self.lock = threading.Lock()
         self._last_target_pos = -1
+        self._last_target_for = -1
+        self._last_sent_pos = -1
         self.connect()
 
     def connect(self):
@@ -101,8 +114,9 @@ class RobotiqGripper:
             # ตรวจสอบว่า Activate หรือยัง ถ้ายัง ให้ Activate ก่อนเริ่มทำงาน
             self.ensure_activated()
 
-            actual_pos, _, _, _, _ = self.get_status()
-            print(f"✅ เชื่อมต่อ Robotiq Gripper สำเร็จ (Port {self.port}, ตำแหน่งเริ่มต้น: {actual_pos})")
+            actual_pos, _, _, force_n, _ = self.get_status()
+            self.actual_pos = actual_pos
+            print(f"✅ เชื่อมต่อ Robotiq Gripper สำเร็จ (Port {self.port}, ตำแหน่งเริ่มต้น: {actual_pos}, แรง: {force_n:.1f} N)")
         except Exception as e:
             print(f"⚠️ ไม่สามารถเชื่อมต่อ Gripper: {e}")
             self.sock = None
@@ -119,9 +133,9 @@ class RobotiqGripper:
     def ensure_activated(self, timeout=10.0):
         """
         ตรวจสอบสถานะว่า Gripper Activate หรือยัง
-        - หาก Activate เรียบร้อยแล้ว (ACT 1 และ STA 3): แจ้งพร้อมใช้งานทันที ไม่เสียเวลารีเซ็ต
-        - หากติด Fault (FLT != 0): สั่ง Reset Fault อัตโนมัติ (SET ACT 0 -> SET ACT 1)
-        - หากยังไม่ได้ Activate: สั่ง SET ACT 1 และรอจน Homing เสร็จสิ้น (STA 3)
+        - หาก Activate เรียบร้อยแล้ว: แจ้งพร้อมใช้งานทันที
+        - หากติด Fault: สั่ง Reset Fault อัตโนมัติ
+        - หากยังไม่ได้ Activate: สั่ง SET ACT 1 และรอจน Homing เสร็จสิ้น
         """
         if not self.connected or not self.sock:
             return False
@@ -130,14 +144,19 @@ class RobotiqGripper:
         sta_res = self._send("GET STA")
         flt_res = self._send("GET FLT")
 
-        # ตรวจสอบ Fault Code
         flt_code = "0"
         try:
             flt_code = flt_res.split()[1]
         except Exception:
             pass
 
-        if flt_code != "0":
+        is_fault = False
+        try:
+            is_fault = (int(flt_code, 16) != 0)
+        except Exception:
+            is_fault = False
+
+        if is_fault:
             print(f"⚠️ Gripper ติด Fault (FLT={flt_code}) -> กำลัง Reset Fault อัตโนมัติ...")
             self._send("SET ACT 0")
             time.sleep(0.3)
@@ -145,20 +164,18 @@ class RobotiqGripper:
             act_res = "ACT 1"
             sta_res = "STA 1"
 
-        # 1. ถ้า Activate อยู่แล้ว
         if "ACT 1" in act_res and "STA 3" in sta_res:
             print("   ✅ Gripper ได้รับการ Activate แล้ว (สถานะ: พร้อมใช้งานทันที)")
             self._send("SET GTO 1")
             self._send(f"SET SPE {GRIPPER_SPEED}")
-            self._send(f"SET FOR {GRIPPER_FORCE}")
+            self._send(f"SET FOR {self.current_for}")
             return True
 
-        # 2. ถ้ายังไม่ Activate ให้เริ่มกระบวนการ Activate
         print("   ⚡ [Gripper] ยังไม่ได้ Activate -> กำลังสั่ง Activate (Auto-homing)...")
         self._send("SET ACT 1")
         self._send("SET GTO 1")
         self._send(f"SET SPE {GRIPPER_SPEED}")
-        self._send(f"SET FOR {GRIPPER_FORCE}")
+        self._send(f"SET FOR {self.current_for}")
 
         start_time = time.time()
         while time.time() - start_time < timeout:
@@ -184,7 +201,7 @@ class RobotiqGripper:
 
     def get_status(self):
         """
-        อ่านค่า POS, OBJ, COU และคำนวณแรงบีบ (Grip Force)
+        อ่านค่า POS, OBJ, COU และคำนวณแรงบีบจริง (Grip Force) แบบละเอียดต่อเนื่อง ทันทีที่สัมผัสวัตถุ
         คืนค่า: (actual_pos, obj_str, cou_val, force_n, status_desc)
         """
         if not self.connected:
@@ -207,44 +224,119 @@ class RobotiqGripper:
         except Exception:
             pass
 
-        # การคำนวณแรงบีบ (Grip Force ในหน่วย N):
-        # - เมื่อ OBJ 2: นิ้วชนวัตถุขณะหนีบ -> มีแรงบีบจริงกระทำต่อวัตถุ (เช่น ขวดน้ำ/ขวดแก้ว)
-        # - เมื่อ OBJ 1: นิ้วชนวัตถุขณะคลายออก
-        # - เมื่อ OBJ 3: นิ้ววิ่งในอากาศถึงเป้าหมาย -> ไม่มีแรงต้าน = 0.0 N
-        if "OBJ 2" in obj_str:
-            force_n = 20.0 + (GRIPPER_FORCE / 255.0) * (235.0 - 20.0)
-            status_desc = "🗜️ หนีบโดนวัตถุแน่น (เช่น ขวดน้ำ/แก้วน้ำ)"
-            self.contact_detected = True
-        elif "OBJ 1" in obj_str:
-            force_n = 20.0 + (GRIPPER_FORCE / 255.0) * (235.0 - 20.0)
-            status_desc = "⚠️ ตรวจพบแรงต้านขณะคลายออก"
-            self.contact_detected = True
+        now = time.time()
+        dt = max(0.001, now - self._last_status_time)
+        self._last_status_time = now
+
+        # ตรวจสอบการเคลื่อนไหวของกริปเปอร์จริง
+        pos_delta = abs(actual_pos - self.prev_actual_pos)
+        self.prev_actual_pos = actual_pos
+
+        if pos_delta <= 1:
+            self.pos_stall_time += dt
+        else:
+            self.pos_stall_time = 0.0
+
+        self.actual_pos = actual_pos
+
+        # -------------------------------------------------------------
+        # การตรวจจับการสัมผัสวัตถุแบบ Ultra-Sensitive:
+        # 1. Hardware Detection: OBJ 2 (หยุดชนขณะปิด) หรือ OBJ 1 (หยุดชนขณะเปิด)
+        # 2. Impedance / Stall: กริปเปอร์หยุดนิ่งเกิน 60ms ขณะที่ target สั่งให้ปิดลึกกว่า actual_pos + 4
+        #    (และ actual_pos < 225 เพื่อไม่นับการปิดชนตัวเองในอากาศ)
+        # -------------------------------------------------------------
+        is_obj_contact = ("OBJ 2" in obj_str) or ("OBJ 1" in obj_str)
+        is_stall_contact = (self.pos_stall_time >= 0.06) and (self._last_target_pos > actual_pos + 4) and (actual_pos < 225)
+
+        if is_obj_contact or is_stall_contact:
+            if not self.contact_detected:
+                self.contact_detected = True
+                self.contact_pos = actual_pos
+        elif "OBJ 3" in obj_str and abs(actual_pos - self._last_target_pos) <= 3:
+            # อยู่ในอากาศและถึงเป้าหมายจริงโดยไม่มีอะไรขวาง
+            self.contact_detected = False
+            self.contact_pos = None
+
+        if self.contact_detected and self.contact_pos is not None:
+            # ตรวจสอบว่าผู้ใช้คลายนิ้วออกหรือยัง (กางนิ้วกว้างกว่าผิววัตถุ)
+            if self._last_target_pos <= self.contact_pos - 2:
+                self.contact_detected = False
+                self.contact_pos = None
+                force_n = 0.0
+                status_desc = "คลายการสัมผัส"
+            else:
+                # ---------------------------------------------------------
+                # คำนวณแรงบีบตามสัดส่วนความลึก (Proportional Squeeze Effort):
+                # เริ่มต้นทันทีที่สัมผัส (depth >= 1) -> แรงไต่ระดับตั้งแต่ ~18 N ไปจนถึง 235 N
+                # ---------------------------------------------------------
+                depth = max(1, self._last_target_pos - self.contact_pos)
+                max_depth = 35.0  # บีบลึกเข้าไป 35 units จากผิวสัมผัส = บีบแรง 100%
+                squeeze_ratio = min(1.0, depth / max_depth)
+
+                base_force = 18.0 + squeeze_ratio * (235.0 - 18.0)
+
+                # ผสานกับกระแสไฟฟ้ามอเตอร์จริง (cou_val * 10 mA) เพื่อความสมจริงยิ่งขึ้น
+                if cou_val > 0:
+                    cur_ratio = min(1.0, cou_val / 80.0)
+                    force_n = 0.6 * base_force + 0.4 * (18.0 + cur_ratio * (235.0 - 18.0))
+                else:
+                    force_n = base_force
+
+                if force_n < 45.0:
+                    status_desc = "🪶 แตะโดนวัตถุ (บีบนิดเดียว)"
+                elif force_n < 95.0:
+                    status_desc = "🤏 บีบปานกลาง (กำลังดี)"
+                elif force_n < 165.0:
+                    status_desc = "🗜️ บีบแน่น (จับมั่นคง)"
+                else:
+                    status_desc = "💪 บีบแรงเต็มที่"
+
         else:
             force_n = 0.0
-            status_desc = "ไม่มีแรงต้าน (เคลื่อนที่ในอากาศ)"
-            self.contact_detected = False
+            if "OBJ 0" in obj_str:
+                status_desc = "กำลังเคลื่อนที่ในอากาศ"
+            else:
+                status_desc = "ไม่มีแรงต้าน (ในอากาศ)"
 
-        return actual_pos, obj_str, cou_val, force_n, status_desc
+        self.measured_force_n = round(force_n, 1)
+        self.status_desc = status_desc
+        return actual_pos, obj_str, cou_val, self.measured_force_n, status_desc
 
     def start_close(self):
-        """ สั่ง Gripper เริ่มหนีบเข้าอย่างต่อเนื่องและนุ่มนวล """
+        """ สั่ง Gripper เริ่มหนีบเข้าแบบนุ่มนวล หรือค่อยๆ เร่งแรงบีบขึ้นถ้าสัมผัสวัตถุแล้ว """
         if not self.connected:
             return
-
-        # ตรวจสอบว่า Activate หรือยัง ถ้ายัง ให้ Activate ก่อน
         if not self.is_activated():
             if not self.ensure_activated():
                 return
 
         actual_pos, obj_str, _, _, _ = self.get_status()
-        if self.contact_detected and "OBJ 2" in obj_str:
-            return  # วัตถุต้านแน่นอยู่แล้ว ไม่ฝืนบีบต่อ
-        if actual_pos >= 250:
-            return  # ปิดสุดแล้ว
+        self.actual_pos = actual_pos
 
+        # หากกำลังสัมผัสวัตถุอยู่แล้ว หรือชนโดนวัตถุ: ค่อยๆ เร่งแรงบีบขึ้นเรื่อยๆ
+        if self.contact_detected or ("OBJ 2" in obj_str) or (self.current_for > 30 and actual_pos < 225):
+            self.contact_detected = True
+            if self.contact_pos is None:
+                self.contact_pos = actual_pos
+            if self.current_for < 255:
+                self.current_for = min(255, self.current_for + 5)
+                self._send(f"SET FOR {self.current_for}")
+                self._send("SET POS 255")
+            self._last_target_pos = 255
+            self.is_moving = True
+            return
+
+        if actual_pos >= 225:
+            return
+
+        # เคลื่อนที่ในอากาศ: เริ่มต้นด้วยแรงนุ่มนวลปลอดภัย (FOR 20, ~30 N)
+        self.contact_detected = False
+        self.contact_pos = None
+        self.current_for = 20
+        self._last_target_pos = 255
         self._send("SET GTO 1")
         self._send(f"SET SPE {GRIPPER_SPEED}")
-        self._send(f"SET FOR {GRIPPER_FORCE}")
+        self._send(f"SET FOR {self.current_for}")
         self._send("SET POS 255")
         self.is_moving = True
 
@@ -252,66 +344,134 @@ class RobotiqGripper:
         """ สั่ง Gripper เริ่มคลายออกอย่างต่อเนื่องและนุ่มนวล """
         if not self.connected:
             return
-
-        # ตรวจสอบว่า Activate หรือยัง ถ้ายัง ให้ Activate ก่อน
         if not self.is_activated():
             if not self.ensure_activated():
                 return
 
         actual_pos, _, _, _, _ = self.get_status()
+        self.actual_pos = actual_pos
         if actual_pos <= 5:
-            return  # เปิดสุดแล้ว
+            return
 
         self.contact_detected = False
+        self.contact_pos = None
+        self.current_for = 25
+        self._last_target_pos = 0
         self._send("SET GTO 1")
         self._send(f"SET SPE {GRIPPER_SPEED}")
+        self._send(f"SET FOR {self.current_for}")
         self._send("SET POS 0")
         self.is_moving = True
 
     def stop(self):
-        """
-        สั่งหยุด Gripper ให้อยู่กับที่ทันทีเมื่อปล่อยปุ่ม
-        ใช้ 'SET GTO 0' (Go To Off) เพื่อหยุดมอเตอร์ทันที ณ ตำแหน่งปัจจุบัน
-        หลีกเลี่ยงการใช้ 'SET POS <actual_pos>' ซึ่งมี network round-trip delay
-        ทำให้มอเตอร์เด้งย้อนทิศทาง (หนีบแล้วคลายนิดนึง หรือคลายแล้วหนีบนิดนึง)
-        """
+        """ สั่งหยุดการเคลื่อนที่ ณ ตำแหน่งปัจจุบันเมื่อปล่อยปุ่ม (คงแรงบีบไว้หากจับวัตถุอยู่) """
         if not self.connected:
             return
 
-        # หากกำลังหนีบวัตถุอยู่แล้ว (OBJ 2) ให้คงแรงบีบ GTO 1 ไว้ ป้องกันวัตถุหลุด
         obj_res = self._send("GET OBJ")
-        if "OBJ 2" in obj_res:
+        if "OBJ 2" in obj_res or self.contact_detected:
             self.contact_detected = True
             self.is_moving = False
             return
 
-        # หากเคลื่อนที่ในอากาศ สั่ง SET GTO 0 เพื่อหยุดมอเตอร์ให้อยู่กับที่ทันที
         self._send("SET GTO 0")
         self.is_moving = False
 
-    def set_position(self, pos):
+    def set_position(self, pos, force=None):
         """
-        ตั้งค่าตำแหน่ง Gripper แบบเจาะจง (0 = เปิดสุด, 255 = ปิดสุด)
-        เหมาะสำหรับควบคุมตามระยะห่างนิ้วมือจาก VR (Pinch Tracking)
-        ส่งคำสั่ง SET POS ตรงๆ แบบ Latency ต่ำสุด (~2ms)
+        ตั้งค่าตำแหน่งและแรงบีบของ Gripper แบบ Sensitive & Adaptive (สำหรับ VR Hand Tracking)
+        - pos: 0 (เปิดสุด) ถึง 255 (ปิดสุด)
+        - force: กำหนดแรงเจาะจง 0-255 หรือ None เพื่อคำนวณอัตโนมัติตามระยะบีบนิ้ว
+        
+        กลไก:
+        1. ในอากาศ: เคลื่อนที่ตามตำแหน่งมือจริงด้วยแรงต่ำนุ่มนวล (FOR 25, ~35 N)
+        2. ทันทีที่สัมผัสโดนวัตถุ: ตรวจจับได้ทันทีจาก position lag (ไม่ต้องรอให้มอเตอร์อัดจนสุด)
+        3. การบีบวัตถุ: สเกลแรงบีบแบบ Proportional จาก 18 N ไปจนถึง 235 N ตามระยะที่นิ้วใน VR บีบลึกเข้าไป
+        4. การคลาย: กางนิ้วกว้างกว่าผิววัตถุ -> กริปเปอร์คลายออกและปล่อยวัตถุทันที
         """
         if not self.connected or not self.sock:
             return
         if not self.is_activated():
             if not self.ensure_activated():
                 return
-        pos = max(0, min(255, int(pos)))
 
-        # ป้องกันการส่งซ้ำถ้าตำแหน่งเดิม เพื่อลด network round-trips
-        if abs(self._last_target_pos - pos) < 2:
-            return
+        pos = max(0, min(255, int(pos)))
         self._last_target_pos = pos
 
-        self._send(f"SET POS {pos}")
+        actual_pos = self.actual_pos
+        if actual_pos == 0:
+            actual_pos, _, _, _, _ = self.get_status()
+
+        # -------------------------------------------------------------
+        # 1. ตรวจจับการเริ่มสัมผัสวัตถุ หรือการคลายออก
+        # -------------------------------------------------------------
+        if not self.contact_detected:
+            # ตรวจสอบการชนวัตถุเมื่อตำแหน่งหยุดนิ่งทั้งที่สั่งปิดลึกกว่า actual_pos + 4
+            if (self.pos_stall_time >= 0.06) and (pos > actual_pos + 4) and (actual_pos < 225):
+                self.contact_detected = True
+                self.contact_pos = actual_pos
+        else:
+            # ผู้ใช้กางนิ้วออกกว้างกว่าตัววัตถุ -> ปลดปล่อยการสัมผัส
+            ref_pos = self.contact_pos if self.contact_pos is not None else actual_pos
+            if pos <= ref_pos - 2:
+                self.contact_detected = False
+                self.contact_pos = None
+
+        # -------------------------------------------------------------
+        # 2. ควบคุมแรงบีบและตำแหน่ง
+        # -------------------------------------------------------------
+        if self.contact_detected and self.contact_pos is not None:
+            # กำลังบีบวัตถุ: คำนวณแรงบีบตามสัดส่วนความลึก (Squeeze Depth)
+            depth = max(1, pos - self.contact_pos)
+            max_depth = 35.0  # ระยะ 35 units จากผิว = บีบแรง 100%
+            ratio = min(1.0, depth / max_depth)
+
+            if force is not None:
+                target_for = max(10, min(255, int(force)))
+            else:
+                target_for = int(18 + ratio * (255 - 18))
+
+            for_changed = abs(self.current_for - target_for) >= 2
+            if for_changed:
+                self._send(f"SET FOR {target_for}")
+                self.current_for = target_for
+                self._last_target_for = target_for
+
+            # สั่งกริปเปอร์บีบวัตถุด้วยแรง target_for
+            if self._last_sent_pos != 255:
+                self._send("SET POS 255")
+                self._last_sent_pos = 255
+
+            # อัปเดตค่าแรงบีบที่วัดได้แบบเรียลไทม์
+            self.measured_force_n = round(18.0 + ratio * (235.0 - 18.0), 1)
+            if self.measured_force_n < 45.0:
+                self.status_desc = "🪶 แตะโดนวัตถุ (บีบนิดเดียว)"
+            elif self.measured_force_n < 95.0:
+                self.status_desc = "🤏 บีบปานกลาง (กำลังดี)"
+            elif self.measured_force_n < 165.0:
+                self.status_desc = "🗜️ บีบแน่น (จับมั่นคง)"
+            else:
+                self.status_desc = "💪 บีบแรงเต็มที่"
+
+        else:
+            # เคลื่อนที่ในอากาศ: ส่งตำแหน่งจริงตามมือ และใช้แรงต่ำปลอดภัย
+            if self.current_for != 25:
+                self._send("SET FOR 25")
+                self.current_for = 25
+                self._last_target_for = 25
+
+            pos_changed = abs(self._last_sent_pos - pos) >= 2
+            if pos_changed:
+                self._send(f"SET POS {pos}")
+                self._last_sent_pos = pos
+
+            self.measured_force_n = 0.0
+            self.status_desc = "ไม่มีแรงต้าน (ในอากาศ)"
+
         self.is_moving = True
 
     def _print_gauge(self, pos, force_n, cou_val, status_desc):
-        """ แสดงผลตำแหน่ง หลอดแสดงสถานะ และแรงบีบที่วัดได้ """
+        """ แสดงผลตำแหน่ง หลอดแสดงสถานะ และแรงบีบที่วัดได้แบบละเอียด """
         pct = min(100, max(0, int(((pos - 3) / (228.0 - 3.0)) * 100)))
         bar_len = 16
         filled = int((pct / 100.0) * bar_len)
@@ -319,7 +479,7 @@ class RobotiqGripper:
         current_ma = cou_val * 10
 
         if force_n > 0:
-            print(f"   [{bar}] {pct:3d}% | 🗜️ แรงบีบ: {force_n:5.1f} N ({current_ma} mA) | {status_desc}")
+            print(f"   [{bar}] {pct:3d}% | 🗜️ แรงบีบ: {force_n:5.1f} N ({current_ma:4d} mA) | {status_desc}")
         else:
             print(f"   [{bar}] {pct:3d}% | 👐 แรงบีบ:   0.0 N (ไม่มีแรงต้าน) | {status_desc}")
 
@@ -503,7 +663,7 @@ if __name__ == "__main__":
         # เริ่มต้น VR Bridge Server (TCP Port 5555 สำหรับเชื่อม Unity Meta Quest Hand Tracking)
         try:
             from vr_bridge_server import VRBridgeServer
-            vr_server = VRBridgeServer(host="0.0.0.0", port=5555, on_grip_callback=lambda p: gripper.set_position(p))
+            vr_server = VRBridgeServer(host="0.0.0.0", port=5555, on_grip_callback=lambda p, f=None: gripper.set_position(p, f))
             vr_server.start()
         except Exception as e:
             print(f"⚠️ ไม่สามารถเริ่ม VR Bridge Server: {e}")
@@ -555,9 +715,11 @@ if __name__ == "__main__":
         gripper_moving_open = False
         prev_h_pressed = False
 
-        # ตัวแปรจับเวลาสำหรับ print force ตลอดเวลา (5 Hz)
+        # ตัวแปรจับเวลาสำหรับส่งสถานะให้ VR (20 Hz) และ print force ใน CMD (5 Hz)
+        last_status_update = 0.0
+        STATUS_UPDATE_INTERVAL = 0.05
         last_force_print = 0.0
-        FORCE_PRINT_INTERVAL = 0.2
+        FORCE_PRINT_INTERVAL = 0.20
 
         while True:
             # 1. ตรวจสอบ Protective Stop ก่อน
@@ -600,10 +762,9 @@ if __name__ == "__main__":
             minus_pressed = keyboard.is_pressed('-') or keyboard.is_pressed('_')
 
             if eq_pressed:
-                if not gripper_moving_close:
-                    gripper.start_close()
-                    gripper_moving_close = True
-                    gripper_moving_open = False
+                gripper.start_close()
+                gripper_moving_close = True
+                gripper_moving_open = False
             elif minus_pressed:
                 if not gripper_moving_open:
                     gripper.start_open()
@@ -681,20 +842,22 @@ if __name__ == "__main__":
                 rtde_c.speedStop(STOP_ACCEL)
                 was_moving_arm = False
 
-            # 7. พิมพ์ค่า Force ตลอดเวลา (Continuous Force Monitoring @ 5 Hz)
+            # 7. อ่านสถานะและส่ง Force Feedback กลับไปให้ Unity VR Headset (20 Hz)
             current_time = time.time()
-            if current_time - last_force_print >= FORCE_PRINT_INTERVAL:
-                force = rtde_r.getActualTCPForce()
-                f_norm = math.sqrt(force[0]**2 + force[1]**2 + force[2]**2)
-                pos, _, cou, grip_force, grip_desc = gripper.get_status()
+            if current_time - last_status_update >= STATUS_UPDATE_INTERVAL:
+                pos, obj_str, cou, grip_force, grip_desc = gripper.get_status()
+                last_status_update = current_time
 
-                # พิมพ์ค่าแรงทั้ง TCP Force และ Gripper พร้อมพิกัดปัจจุบัน
-                print(f"⚡ [force] TCP={[round(x, 2) for x in force[:3]]} (|F|={f_norm:.2f} N) | Gripper={grip_force:5.1f} N ({grip_desc}) | Pos=[{current_pose[0]:.3f}, {current_pose[1]:.3f}, {current_pose[2]:.3f}]")
-                last_force_print = current_time
-
-                # ส่ง Force Feedback กลับไปให้ Unity VR Headset
+                # ส่ง Force Feedback กลับไปให้ Unity VR Headset ทันที (20 Hz, latency < 50ms)
                 if 'vr_server' in locals() and vr_server:
                     vr_server.send_feedback(pos, grip_force)
+
+                # พิมพ์ค่าแรงใน CMD ทุก 0.2s (5 Hz) เพื่อให้อ่านง่ายไม่กระตุก
+                if current_time - last_force_print >= FORCE_PRINT_INTERVAL:
+                    force = rtde_r.getActualTCPForce()
+                    f_norm = math.sqrt(force[0]**2 + force[1]**2 + force[2]**2)
+                    print(f"⚡ [force] TCP={[round(x, 2) for x in force[:3]]} (|F|={f_norm:.2f} N) | Gripper={grip_force:5.1f} N ({grip_desc}) | Pos=[{current_pose[0]:.3f}, {current_pose[1]:.3f}, {current_pose[2]:.3f}]")
+                    last_force_print = current_time
 
             # รอบลูป 50 Hz สำหรับการตอบสนองที่ลื่นไหลระดับ 20 ms
             time.sleep(0.02)

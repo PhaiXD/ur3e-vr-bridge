@@ -108,17 +108,21 @@ class VRBridgeServer:
                             if not line:
                                 continue
 
-                            # ประมวลผลคำสั่ง 'GRIP <pos>'
+                            # ประมวลผลคำสั่ง 'GRIP <pos> [force]'
                             if line.startswith("GRIP"):
                                 parts = line.split()
                                 if len(parts) >= 2:
                                     try:
                                         pos = int(parts[1])
                                         pos = max(0, min(255, pos))
+                                        force = int(parts[2]) if len(parts) >= 3 else None
                                         self.latest_pos = pos
 
                                         if self.on_grip_callback:
-                                            self.on_grip_callback(pos)
+                                            try:
+                                                self.on_grip_callback(pos, force)
+                                            except TypeError:
+                                                self.on_grip_callback(pos)
                                     except ValueError:
                                         pass
 
