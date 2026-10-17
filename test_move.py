@@ -93,12 +93,10 @@ class RobotiqGripper:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.settimeout(2.0)
             self.sock.connect((self.ip, self.port))
-            # เปิดการทำงาน Gripper (Activate)
-            self._send("SET ACT 1")
-            self._send("SET GTO 1")
-            self._send(f"SET SPE {GRIPPER_SPEED}")
-            self._send(f"SET FOR {GRIPPER_FORCE}")
             self.connected = True
+
+            # ตรวจสอบว่า Activate หรือยัง ถ้ายัง ให้ Activate ก่อนเริ่มทำงาน
+            self.ensure_activated()
 
             actual_pos, _, _, _, _ = self.get_status()
             print(f"✅ เชื่อมต่อ Robotiq Gripper สำเร็จ (Port {self.port}, ตำแหน่งเริ่มต้น: {actual_pos})")
@@ -106,6 +104,69 @@ class RobotiqGripper:
             print(f"⚠️ ไม่สามารถเชื่อมต่อ Gripper: {e}")
             self.sock = None
             self.connected = False
+
+    def is_activated(self):
+        """ ตรวจสอบว่า Gripper Activate แล้วหรือไม่ (ACT == 1 และ STA == 3) """
+        if not self.connected:
+            return False
+        act_res = self._send("GET ACT")
+        sta_res = self._send("GET STA")
+        return ("ACT 1" in act_res) and ("STA 3" in sta_res)
+
+    def ensure_activated(self, timeout=10.0):
+        """
+        ตรวจสอบสถานะว่า Gripper Activate หรือยัง
+        - หาก Activate เรียบร้อยแล้ว (ACT 1 และ STA 3): แจ้งพร้อมใช้งานทันที ไม่เสียเวลารีเซ็ต
+        - หากติด Fault (FLT != 0): สั่ง Reset Fault อัตโนมัติ (SET ACT 0 -> SET ACT 1)
+        - หากยังไม่ได้ Activate: สั่ง SET ACT 1 และรอจน Homing เสร็จสิ้น (STA 3)
+        """
+        if not self.connected or not self.sock:
+            return False
+
+        act_res = self._send("GET ACT")
+        sta_res = self._send("GET STA")
+        flt_res = self._send("GET FLT")
+
+        # ตรวจสอบ Fault Code
+        flt_code = "0"
+        try:
+            flt_code = flt_res.split()[1]
+        except Exception:
+            pass
+
+        if flt_code != "0":
+            print(f"⚠️ Gripper ติด Fault (FLT={flt_code}) -> กำลัง Reset Fault อัตโนมัติ...")
+            self._send("SET ACT 0")
+            time.sleep(0.3)
+            self._send("SET ACT 1")
+            act_res = "ACT 1"
+            sta_res = "STA 1"
+
+        # 1. ถ้า Activate อยู่แล้ว
+        if "ACT 1" in act_res and "STA 3" in sta_res:
+            print("   ✅ Gripper ได้รับการ Activate แล้ว (สถานะ: พร้อมใช้งานทันที)")
+            self._send("SET GTO 1")
+            self._send(f"SET SPE {GRIPPER_SPEED}")
+            self._send(f"SET FOR {GRIPPER_FORCE}")
+            return True
+
+        # 2. ถ้ายังไม่ Activate ให้เริ่มกระบวนการ Activate
+        print("   ⚡ [Gripper] ยังไม่ได้ Activate -> กำลังสั่ง Activate (Auto-homing)...")
+        self._send("SET ACT 1")
+        self._send("SET GTO 1")
+        self._send(f"SET SPE {GRIPPER_SPEED}")
+        self._send(f"SET FOR {GRIPPER_FORCE}")
+
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            sta_res = self._send("GET STA")
+            if "STA 3" in sta_res:
+                print("   ✅ [Gripper] ทำการ Activate สำเร็จเรียบร้อย พร้อมใช้งาน!")
+                return True
+            time.sleep(0.3)
+
+        print(f"   ❌ [Gripper] หมดเวลาการ Activate ({timeout}s)! กรุณาตรวจสอบสถานะ Gripper")
+        return False
 
     def _send(self, cmd):
         if not self.connected or not self.sock:
@@ -165,6 +226,12 @@ class RobotiqGripper:
         """ สั่ง Gripper เริ่มหนีบเข้าอย่างต่อเนื่องและนุ่มนวล """
         if not self.connected:
             return
+
+        # ตรวจสอบว่า Activate หรือยัง ถ้ายัง ให้ Activate ก่อน
+        if not self.is_activated():
+            if not self.ensure_activated():
+                return
+
         actual_pos, obj_str, _, _, _ = self.get_status()
         if self.contact_detected and "OBJ 2" in obj_str:
             return  # วัตถุต้านแน่นอยู่แล้ว ไม่ฝืนบีบต่อ
@@ -181,6 +248,12 @@ class RobotiqGripper:
         """ สั่ง Gripper เริ่มคลายออกอย่างต่อเนื่องและนุ่มนวล """
         if not self.connected:
             return
+
+        # ตรวจสอบว่า Activate หรือยัง ถ้ายัง ให้ Activate ก่อน
+        if not self.is_activated():
+            if not self.ensure_activated():
+                return
+
         actual_pos, _, _, _, _ = self.get_status()
         if actual_pos <= 5:
             return  # เปิดสุดแล้ว
@@ -211,6 +284,23 @@ class RobotiqGripper:
         # หากเคลื่อนที่ในอากาศ สั่ง SET GTO 0 เพื่อหยุดมอเตอร์ให้อยู่กับที่ทันที
         self._send("SET GTO 0")
         self.is_moving = False
+
+    def set_position(self, pos):
+        """
+        ตั้งค่าตำแหน่ง Gripper แบบเจาะจง (0 = เปิดสุด, 255 = ปิดสุด)
+        เหมาะสำหรับควบคุมตามระยะห่างนิ้วมือจาก VR (Pinch Tracking)
+        """
+        if not self.connected:
+            return
+        if not self.is_activated():
+            if not self.ensure_activated():
+                return
+        pos = max(0, min(255, int(pos)))
+        self._send("SET GTO 1")
+        self._send(f"SET SPE {GRIPPER_SPEED}")
+        self._send(f"SET FOR {GRIPPER_FORCE}")
+        self._send(f"SET POS {pos}")
+        self.is_moving = True
 
     def _print_gauge(self, pos, force_n, cou_val, status_desc):
         """ แสดงผลตำแหน่ง หลอดแสดงสถานะ และแรงบีบที่วัดได้ """
@@ -402,6 +492,15 @@ if __name__ == "__main__":
         rtde_r = rtde_receive.RTDEReceiveInterface(ROBOT_IP)
         gripper = RobotiqGripper(ROBOT_IP, GRIPPER_PORT)
 
+        # เริ่มต้น VR Bridge Server (TCP Port 5555 สำหรับเชื่อม Unity Meta Quest Hand Tracking)
+        try:
+            from vr_bridge_server import VRBridgeServer
+            vr_server = VRBridgeServer(host="0.0.0.0", port=5555, on_grip_callback=lambda p: gripper.set_position(p))
+            vr_server.start()
+        except Exception as e:
+            print(f"⚠️ ไม่สามารถเริ่ม VR Bridge Server: {e}")
+            vr_server = None
+
         print("\n✅ เชื่อมต่อระบบสำเร็จ!")
         print("==================================================")
         print("🚀 โหมดควบคุมแบบ Smooth (Continuous Jogging):")
@@ -585,6 +684,10 @@ if __name__ == "__main__":
                 print(f"⚡ [force] TCP={[round(x, 2) for x in force[:3]]} (|F|={f_norm:.2f} N) | Gripper={grip_force:5.1f} N ({grip_desc}) | Pos=[{current_pose[0]:.3f}, {current_pose[1]:.3f}, {current_pose[2]:.3f}]")
                 last_force_print = current_time
 
+                # ส่ง Force Feedback กลับไปให้ Unity VR Headset
+                if 'vr_server' in locals() and vr_server:
+                    vr_server.send_feedback(pos, grip_force)
+
             # รอบลูป 50 Hz สำหรับการตอบสนองที่ลื่นไหลระดับ 20 ms
             time.sleep(0.02)
 
@@ -592,6 +695,8 @@ if __name__ == "__main__":
         print(f"\n❌ เกิดข้อผิดพลาด: {e}")
 
     finally:
+        if 'vr_server' in locals() and vr_server:
+            vr_server.stop()
         if 'gripper' in locals():
             gripper.disconnect()
         if 'rtde_c' in locals():
