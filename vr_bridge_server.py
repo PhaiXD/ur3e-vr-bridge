@@ -18,7 +18,8 @@ class VRBridgeServer:
     TCP Server รับคำสั่งจาก Unity Meta Quest Hand Tracking
     - Port 5555
     - รับคำสั่ง: 'GRIP <pos>\n' (0 = เปิดสุด, 255 = ปิดสุด)
-    - รับคำสั่ง: 'MOVE <vx> <vy> <vz>\n' (ความเร็วเชิงเส้นจากมือ VR, หน่วย m/s)
+    - รับคำสั่ง: 'GRIP <pos>\n' (0 = เปิดสุด, 255 = ปิดสุด)
+    - รับคำสั่ง: 'MOVE <vx> <vy> <vz> [wx] [wy] [wz]\n' (ความเร็ว 6-DOF จากมือ VR, หน่วย m/s และ rad/s)
     - ส่งสถานะกลับ: 'STATUS <pos> <force_n>\n'
     """
     def __init__(self, host=DEFAULT_HOST, port=DEFAULT_PORT, on_grip_callback=None, on_move_callback=None):
@@ -32,7 +33,7 @@ class VRBridgeServer:
         self.thread = None
         self.latest_pos = 0
         self.latest_force = 0.0
-        self.latest_vel = [0.0, 0.0, 0.0]  # vx, vy, vz จาก VR
+        self.latest_vel = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # vx, vy, vz, wx, wy, wz จาก VR
         self.client_address = None
 
     def start(self):
@@ -129,8 +130,8 @@ class VRBridgeServer:
                                     except ValueError:
                                         pass
 
-                            # ประมวลผลคำสั่ง 'MOVE <vx> <vy> <vz>'
-                            # ความเร็วเชิงเส้นจากมือ VR ที่ Unity คำนวณแล้ว (หน่วย m/s)
+                            # ประมวลผลคำสั่ง 'MOVE <vx> <vy> <vz> [wx] [wy] [wz]'
+                            # ความเร็ว 6-DOF จากมือ VR ที่ Unity คำนวณแล้ว (linear: m/s, angular: rad/s)
                             elif line.startswith("MOVE"):
                                 parts = line.split()
                                 if len(parts) >= 4:
@@ -138,10 +139,16 @@ class VRBridgeServer:
                                         vx = float(parts[1])
                                         vy = float(parts[2])
                                         vz = float(parts[3])
-                                        self.latest_vel = [vx, vy, vz]
+                                        wx = float(parts[4]) if len(parts) >= 7 else 0.0
+                                        wy = float(parts[5]) if len(parts) >= 7 else 0.0
+                                        wz = float(parts[6]) if len(parts) >= 7 else 0.0
+                                        self.latest_vel = [vx, vy, vz, wx, wy, wz]
 
                                         if self.on_move_callback:
-                                            self.on_move_callback(vx, vy, vz)
+                                            try:
+                                                self.on_move_callback(vx, vy, vz, wx, wy, wz)
+                                            except TypeError:
+                                                self.on_move_callback(vx, vy, vz)
                                     except ValueError:
                                         pass
 

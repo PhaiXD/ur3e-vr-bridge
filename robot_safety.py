@@ -21,12 +21,12 @@ MAX_Z = 0.720             # ความสูงสูงสุด Base Frame (
 
 # ขอบเขตมุมข้อต่อ (Joint Limits) ที่ปลอดภัยและยืดหยุ่นสำหรับงาน Lab
 JOINT_LIMITS_DEG = [
-    (-170, 170),    # J1 Base: หมุนรอบฐาน
-    (-165, -15),    # J2 Shoulder: แขนบน
-    (-150, -15),    # J3 Elbow: บังคับงออย่างน้อย 15° เสมอ ป้องกันเหยียดตรงสุดจน Singularity
-    (-170, 85),     # J4 Wrist 1: ขยายเป็น +85° เพื่อให้กดแขนลงต่ำสุดได้โดยปากจับยังขนานพื้น
-    (15, 165),      # J5 Wrist 2: หลบ 0° และ 180° (Wrist Singularity)
-    (-170, 170),    # J6 Wrist 3: หมุนปลายปากจับ
+    (-170, 170),    # J1 Base: หมุนรอบฐาน (Home: 0°)
+    (-165, -15),    # J2 Shoulder: แขนบน (Home: -90°)
+    (-150, -15),    # J3 Elbow: บังคับงออย่างน้อย 15° เสมอ ป้องกันเหยียดตรงสุดจน Singularity (Home: -90°)
+    (-275, 90),     # J4 Wrist 1: รองรับท่า Home ที่ -180° และก้มลงต่ำได้ลึก (รองรับถึง -275°)
+    (-170, 170),    # J5 Wrist 2: รองรับท่า Home ที่ -90° (หลบ Singularity ที่ 0°)
+    (-360, 360),    # J6 Wrist 3: หมุนอิสระ 360° (Home: 180°)
 ]
 JOINT_LIMITS_RAD = [(math.radians(lo), math.radians(hi)) for lo, hi in JOINT_LIMITS_DEG]
 JOINT_NAMES = ["Base", "Shoulder", "Elbow", "Wrist 1", "Wrist 2", "Wrist 3"]
@@ -258,6 +258,15 @@ def filter_cartesian_velocity(vx, vy, vz, wx=0.0, wy=0.0, wz=0.0, current_pose=N
             wx *= scale; wy *= scale; wz *= scale
             reason = f"🛑 ข้อต่อ {JOINT_NAMES[i]} ถึงขอบล่าง ({math.degrees(q_val):.1f}°) - บล็อกเฉพาะทิศที่ฝืน"
 
+        # ป้องกัน Wrist 2 เข้าใกล้จุด Singularity ที่ 0° (|q5| < 15°)
+        if i == 4:
+            SINGULARITY_MARGIN = math.radians(15)
+            if abs(pred_q) < SINGULARITY_MARGIN and abs(pred_q) < abs(q_val):
+                scale = max(0.0, min(1.0, (abs(q_val) - SINGULARITY_MARGIN) / (abs(q_dot) * dt + 1e-6)))
+                vx *= scale; vy *= scale; vz *= scale
+                wx *= scale; wy *= scale; wz *= scale
+                reason = f"🛑 ข้อต่อ Wrist 2 เข้าใกล้ Singularity 0° ({math.degrees(q_val):.1f}°) - บล็อกทิศเข้าหา 0°"
+
     # 4. ตรวจสอบความเร็วข้อต่อจริง (Active QD Feedback Damping)
     if qd_actual is not None:
         actual_max_qd = max(abs(q_dot) for q_dot in qd_actual)
@@ -267,3 +276,55 @@ def filter_cartesian_velocity(vx, vy, vz, wx=0.0, wy=0.0, wz=0.0, current_pose=N
             wx *= damp; wy *= damp; wz *= damp
 
     return vx, vy, vz, wx, wy, wz, reason
+
+
+def filter_joint_velocity(qd, current_q, dt=0.02):
+    """
+    ตรวจสอบและกรองความเร็วข้อต่อ qd ตามขอบเขตความปลอดภัย (Joint Limits & Singularity):
+    - ระบบ Soft Braking: ชะลอความเร็วนุ่มนวลเมื่อเข้าใกล้ขอบเขต 5° เพื่อป้องกันกระชาก
+    - ป้องกัน Wrist 2 เข้าใกล้จุด Singularity รอบ 0° (|q5| < 15°) แบบ Smooth Deceleration
+    - จำกัดความเร็วไม่ให้เกิน MAX_SAFE_JOINT_SPEED (45°/s) ป้องกัน Error 100%
+    """
+    filtered_qd = list(qd)
+    reason = "OK"
+    buf_rad = math.radians(5.0)
+
+    for i in range(6):
+        q_val = current_q[i]
+        lo, hi = JOINT_LIMITS_RAD[i]
+        q_dot = filtered_qd[i]
+
+        # 1. จำกัดความเร็วสูงสุด
+        if abs(q_dot) > MAX_SAFE_JOINT_SPEED:
+            filtered_qd[i] = math.copysign(MAX_SAFE_JOINT_SPEED, q_dot)
+            q_dot = filtered_qd[i]
+
+        # 2. ระบบ Soft Braking ชะลอความเร็วก่อนถึงขอบเขต (ช่วง 5°)
+        if q_dot > 0 and q_val > (hi - buf_rad):
+            scale = max(0.0, (hi - q_val) / buf_rad)
+            filtered_qd[i] *= scale
+            if scale == 0.0:
+                reason = f"🛑 ข้อต่อ {JOINT_NAMES[i]} ถึงขอบบน ({math.degrees(q_val):.1f}°)"
+        elif q_dot < 0 and q_val < (lo + buf_rad):
+            scale = max(0.0, (q_val - lo) / buf_rad)
+            filtered_qd[i] *= scale
+            if scale == 0.0:
+                reason = f"🛑 ข้อต่อ {JOINT_NAMES[i]} ถึงขอบล่าง ({math.degrees(q_val):.1f}°)"
+
+        # 3. ป้องกัน Wrist 2 เข้าใกล้จุด Singularity ที่ 0° (|q5| < 15°) แบบ Soft Deceleration
+        if i == 4:
+            SING_LIM = math.radians(15.0)
+            SING_BUF = math.radians(20.0)
+            if q_dot > 0 and q_val < 0 and q_val > -SING_BUF:
+                scale = max(0.0, (-SING_LIM - q_val) / (SING_BUF - SING_LIM))
+                filtered_qd[i] *= scale
+                if scale == 0.0:
+                    reason = f"🛑 ข้อต่อ Wrist 2 เข้าใกล้ Singularity 0° ({math.degrees(q_val):.1f}°)"
+            elif q_dot < 0 and q_val > 0 and q_val < SING_BUF:
+                scale = max(0.0, (q_val - SING_LIM) / (SING_BUF - SING_LIM))
+                filtered_qd[i] *= scale
+                if scale == 0.0:
+                    reason = f"🛑 ข้อต่อ Wrist 2 เข้าใกล้ Singularity 0° ({math.degrees(q_val):.1f}°)"
+
+    return filtered_qd, reason
+
