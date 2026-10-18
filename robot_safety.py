@@ -1,0 +1,236 @@
+import math
+
+# ==================== UR3e Kinematic & Workspace Parameters ====================
+# DH Parameters for UR3e (meters):
+DH = [
+    [0.0,       0.1519,  math.pi/2],   # Joint 1 (Base height d1 = 151.9 mm)
+    [-0.2436,   0.0,     0.0],         # Joint 2 (Upper arm a2 = 243.6 mm)
+    [-0.2132,   0.0,     0.0],         # Joint 3 (Forearm a3 = 213.2 mm)
+    [0.0,       0.13105, math.pi/2],   # Joint 4 (Wrist 1 d4 = 131.05 mm)
+    [0.0,       0.08535, -math.pi/2],  # Joint 5 (Wrist 2 d5 = 85.35 mm)
+    [0.0,       0.0921,  0.0]          # Joint 6 (Wrist 3 d6 = 92.1 mm)
+]
+
+SHOULDER_Z = 0.1519       # ความสูงจุดหมุน Shoulder จากระนาบฐานหุ่น (m)
+SPHERE_MAX = 0.430        # รัศมีทรงกลมสูงสุดจาก Shoulder (m) - ป้องกันเอื้อมสุดแขน/Elbow Singularity
+SPHERE_MIN = 0.150        # รัศมีทรงกลมต่ำสุดจาก Shoulder (m) - ป้องกันแขนพับชนตัวเอง
+MIN_Z = 0.050             # ความสูงต่ำสุดจากฐานหุ่น (50 mm ป้องกันชนโต๊ะ)
+MAX_Z = 0.680             # ความสูงสูงสุดจากฐานหุ่น (680 mm)
+
+# ขอบเขตมุมข้อต่อ (Joint Limits) ที่ปลอดภัยและปรับให้ลงต่ำได้โดยไม่ติด
+JOINT_LIMITS_DEG = [
+    (-170, 170),    # J1 Base: หมุนรอบฐาน
+    (-165, -15),    # J2 Shoulder: แขนบน
+    (-150, -15),    # J3 Elbow: บังคับงออย่างน้อย 15° เสมอ ป้องกันเหยียดตรงสุดจน Error
+    (-170, 85),     # J4 Wrist 1: ขยายเป็น +85° เพื่อให้กดแขนลงต่ำสุดได้โดยปากจับยังขนานพื้น
+    (15, 165),      # J5 Wrist 2: หลบ 0° และ 180° (Wrist Singularity)
+    (-170, 170),    # J6 Wrist 3: หมุนปลายปากจับ
+]
+JOINT_LIMITS_RAD = [(math.radians(lo), math.radians(hi)) for lo, hi in JOINT_LIMITS_DEG]
+JOINT_NAMES = ["Base", "Shoulder", "Elbow", "Wrist 1", "Wrist 2", "Wrist 3"]
+
+# ขีดจำกัดความเร็วข้อต่อสูงสุดที่ปลอดภัย (Safe Joint Velocity Limits)
+# UR3e สูงสุด 180°/s (J1-J3) และ 360°/s (J4-J6) -> เราคุมไว้ที่ 75°/s เพื่อความปลอดภัย 100%
+MAX_SAFE_JOINT_SPEED_DEG = 75.0
+MAX_SAFE_JOINT_SPEED = math.radians(MAX_SAFE_JOINT_SPEED_DEG)
+
+
+def dh_matrix(a, d, alpha, theta):
+    """ Denavit-Hartenberg Transformation Matrix """
+    ct = math.cos(theta)
+    st = math.sin(theta)
+    ca = math.cos(alpha)
+    sa = math.sin(alpha)
+    return [
+        [ct, -st*ca,  st*sa, a*ct],
+        [st,  ct*ca, -ct*sa, a*st],
+        [0.0, sa,     ca,    d],
+        [0.0, 0.0,    0.0,   1.0]
+    ]
+
+
+def mat_mult(A, B):
+    """ Matrix multiplication 4x4 """
+    C = [[0.0]*4 for _ in range(4)]
+    for i in range(4):
+        for j in range(4):
+            for k in range(4):
+                C[i][j] += A[i][k] * B[k][j]
+    return C
+
+
+def compute_ur3e_jacobian(q):
+    """
+    คำนวณ Geometric Jacobian J (6x6) สำหรับ UR3e ที่มุมข้อต่อ q
+    ใช้สำหรับแปลงความเร็ว Cartesian [vx, vy, vz, wx, wy, wz] เป็นความเร็วข้อต่อ [q1_dot, ..., q6_dot]
+    """
+    T = [[1.0 if i==j else 0.0 for j in range(4)] for i in range(4)]
+    origins = [[0.0, 0.0, 0.0]]
+    z_axes = [[0.0, 0.0, 1.0]]
+
+    for i in range(6):
+        a, d, alpha = DH[i]
+        T_i = dh_matrix(a, d, alpha, q[i])
+        T = mat_mult(T, T_i)
+        origins.append([T[0][3], T[1][3], T[2][3]])
+        z_axes.append([T[0][2], T[1][2], T[2][2]])
+
+    p_e = origins[-1]
+    J = [[0.0]*6 for _ in range(6)]
+    for i in range(6):
+        p_i = origins[i]
+        z_i = z_axes[i]
+        dx = p_e[0] - p_i[0]
+        dy = p_e[1] - p_i[1]
+        dz = p_e[2] - p_i[2]
+        J[0][i] = z_i[1]*dz - z_i[2]*dy
+        J[1][i] = z_i[2]*dx - z_i[0]*dz
+        J[2][i] = z_i[0]*dy - z_i[1]*dx
+        J[3][i] = z_i[0]
+        J[4][i] = z_i[1]
+        J[5][i] = z_i[2]
+
+    return J, p_e
+
+
+def solve_linear_system(A, b):
+    """
+    แก้สมการเชิงเส้น Ax = b ขนาด 6x6 ด้วย Gaussian Elimination (Partial Pivoting)
+    ประมวลผลเร็วระดับ 30 ไมโครวินาที ไม่พึ่งพาไลบรารีภายนอก
+    """
+    n = len(b)
+    M = [A[i][:] + [b[i]] for i in range(n)]
+
+    for i in range(n):
+        max_row = i
+        for k in range(i+1, n):
+            if abs(M[k][i]) > abs(M[max_row][i]):
+                max_row = k
+        M[i], M[max_row] = M[max_row], M[i]
+
+        pivot = M[i][i]
+        if abs(pivot) < 1e-6:
+            return None  # Singular Matrix (ใกล้จุดขัดทางจลนศาสตร์)
+
+        for k in range(i+1, n):
+            factor = M[k][i] / pivot
+            for j in range(i, n+1):
+                M[k][j] -= factor * M[i][j]
+
+    x = [0.0] * n
+    for i in range(n-1, -1, -1):
+        s = M[i][n]
+        for j in range(i+1, n):
+            s -= M[i][j] * x[j]
+        x[i] = s / M[i][i]
+    return x
+
+
+def filter_cartesian_velocity(vx, vy, vz, current_pose, current_q, qd_actual=None, dt=0.10):
+    """
+    ระบบกรองความเร็วแบบครอบคลุมรอบด้าน (Full Kinematic Safety & Limit Prevention):
+    1. ป้องกันระยะเอื้อม 3D แบบทรงกลม (3D Spherical Clamping):
+       - แก้ไขจุดบกพร่องด้านบนหน้า (เฉียงบน) ไม่ให้เอื้อมจนหลุดขอบเขตทรงกลมและข้อศอกเหยียดตรง
+       - อนุญาตให้ถอยหลังหรือเลื่อนข้างออกจากขอบได้เสมอ (Directional Release)
+    2. ป้องกันระดับ Z (ลงต่ำสุดได้ถึง 50 mm โดยไม่ค้าง และขยับขึ้นได้เสมอ)
+    3. ป้องกันความเร็วรอบข้อต่อหมุนเร็วเกิน (Joint Speed Spike Protection via Jacobian & QD feedback):
+       - คำนวณ q_dot ล่วงหน้า หากข้อต่อใดมีแนวโน้มหมุนเร็วกว่าเกณฑ์ปลอดภัย (75°/s) จะลดทอนความเร็วลงอย่างนุ่มนวล
+    4. ป้องกันขีดจำกัดมุมข้อต่อแบบทิศทาง (Directional Joint Limit):
+       - หากข้อต่อแตะขอบเขต จะบล็อกเฉพาะทิศทางที่ฝืนต่อเท่านั้น แต่ปล่อยให้ขยับทิศตรงข้ามเพื่อถอยกลับได้ 100%
+    """
+    if vx == 0.0 and vy == 0.0 and vz == 0.0:
+        return 0.0, 0.0, 0.0, "OK"
+
+    x, y, z = current_pose[0], current_pose[1], current_pose[2]
+    dz = z - SHOULDER_Z
+    d_3d = math.sqrt(x*x + y*y + dz*dz)
+
+    # 1. ตรวจสอบขอบเขตทรงกลม 3D จาก Shoulder
+    if d_3d > 1e-4:
+        nx, ny, nz = x / d_3d, y / d_3d, dz / d_3d
+    else:
+        nx, ny, nz = 1.0, 0.0, 0.0
+
+    # ความเร็วในแนวรัศมีออกจากศูนย์กลาง (v_radial)
+    v_rad = vx * nx + vy * ny + vz * nz
+    pred_d_3d = d_3d + v_rad * dt
+
+    reason = "OK"
+
+    # ถ้าเอื้อมไกลเกินทรงกลมปลอดภัย (เช่น บริเวณเฉียงบน) และกำลังพุ่งออกนอกรัศมี:
+    if pred_d_3d > SPHERE_MAX and v_rad > 0:
+        # ตัดเฉพาะเวกเตอร์ความเร็วที่พุ่งออกไปภายนอก แต่ยอมให้เคลื่อนที่ขนานผิวหรือถอยกลับเข้าด้านใน
+        vx -= v_rad * nx
+        vy -= v_rad * ny
+        vz -= v_rad * nz
+        reason = f"🛑 ขอบเขต 3D Reach ({d_3d*1000:.0f}mm) - ล็อกไม่ให้ออกนอกทรงกลม แต่ถอยกลับได้"
+    elif pred_d_3d < SPHERE_MIN and v_rad < 0:
+        vx -= v_rad * nx
+        vy -= v_rad * ny
+        vz -= v_rad * nz
+        reason = f"🛑 ใกล้ Shoulder เกินไป ({d_3d*1000:.0f}mm) - ป้องกันชนตัวเอง"
+
+    # 2. ตรวจสอบขอบเขตแกน Z (ความสูง)
+    pred_z = z + vz * dt
+    if pred_z < MIN_Z and vz < 0:
+        vz = 0.0
+        reason = f"🛑 ขอบเขตพื้น Z ต่ำสุด ({z*1000:.0f}mm) - ล็อกลง แต่ยกขึ้นได้"
+    elif pred_z > MAX_Z and vz > 0:
+        vz = 0.0
+        reason = f"🛑 ขอบเขต Z สูงสุด ({z*1000:.0f}mm) - ล็อกขึ้น แต่ยกลงได้"
+
+    # 3. คำนวณความเร็วข้อต่อล่วงหน้าด้วย Jacobian (Lookahead Joint Velocities)
+    v_cmd = [vx, vy, vz, 0.0, 0.0, 0.0]
+    J, _ = compute_ur3e_jacobian(current_q)
+    qd_pred = solve_linear_system(J, v_cmd)
+
+    if qd_pred is not None:
+        # 3a. ควบคุมความเร็วข้อต่อ (Joint Speed Limiter)
+        max_qd = max(abs(q_dot) for q_dot in qd_pred)
+        if max_qd > MAX_SAFE_JOINT_SPEED:
+            scale = MAX_SAFE_JOINT_SPEED / max_qd
+            vx *= scale
+            vy *= scale
+            vz *= scale
+            qd_pred = [q_dot * scale for q_dot in qd_pred]
+            reason = f"⚡ ชะลอความเร็วหุ่นยนต์: ป้องกันข้อต่อหมุนเร็วเกิน ({math.degrees(max_qd):.1f}°/s > {MAX_SAFE_JOINT_SPEED_DEG}°/s)"
+
+        # 3b. ตรวจสอบขอบเขตข้อต่อแบบทิศทาง (Directional Joint Limit Protection)
+        # ป้องกันอาการ 'ค้าง ขยับต่อไม่ได้' เมื่อถึงขีดจำกัด
+        for i in range(6):
+            q_val = current_q[i]
+            lo, hi = JOINT_LIMITS_RAD[i]
+            q_dot = qd_pred[i]
+            pred_q = q_val + q_dot * dt
+
+            # ถ้ากำลังพุ่งเกินขอบบน และความเร็วพยายามดันให้สูงขึ้นอีก -> ลด/ตัดเฉพาะคำสั่งที่ดันเกิน
+            if pred_q > hi and q_dot > 0:
+                scale = max(0.0, min(1.0, (hi - q_val) / (q_dot * dt + 1e-6)))
+                vx *= scale
+                vy *= scale
+                vz *= scale
+                reason = f"🛑 ข้อต่อ {JOINT_NAMES[i]} ถึงขอบบน ({math.degrees(q_val):.1f}°) - บล็อกเฉพาะทิศทางที่ฝืน แต่ถอยกลับได้"
+            # ถ้ากำลังพุ่งต่ำกว่าขอบล่าง และความเร็วพยายามกดให้ต่ำลงอีก -> ลด/ตัดเฉพาะคำสั่งที่กดลง
+            elif pred_q < lo and q_dot < 0:
+                scale = max(0.0, min(1.0, (q_val - lo) / (-q_dot * dt + 1e-6)))
+                vx *= scale
+                vy *= scale
+                vz *= scale
+                reason = f"🛑 ข้อต่อ {JOINT_NAMES[i]} ถึงขอบล่าง ({math.degrees(q_val):.1f}°) - บล็อกเฉพาะทิศทางที่ฝืน แต่ถอยกลับได้"
+    else:
+        # Singular Matrix: ใกล้จุด Singularity สูงมาก ชะลอความเร็วเพื่อความปลอดภัย
+        vx *= 0.2
+        vy *= 0.2
+        vz *= 0.2
+        reason = "⚠️ ใกล้จุด Singularity - ปรับลดความเร็วเพื่อป้องกันเครื่องกระตุก"
+
+    # 4. ตรวจสอบความเร็วข้อต่อจริง (Active QD Feedback Damping)
+    if qd_actual is not None:
+        actual_max_qd = max(abs(q_dot) for q_dot in qd_actual)
+        if actual_max_qd > MAX_SAFE_JOINT_SPEED:
+            damp = min(1.0, MAX_SAFE_JOINT_SPEED / actual_max_qd)
+            vx *= damp
+            vy *= damp
+            vz *= damp
+
+    return vx, vy, vz, reason
