@@ -32,9 +32,22 @@ JOINT_LIMITS_RAD = [(math.radians(lo), math.radians(hi)) for lo, hi in JOINT_LIM
 JOINT_NAMES = ["Base", "Shoulder", "Elbow", "Wrist 1", "Wrist 2", "Wrist 3"]
 
 # ขีดจำกัดความเร็วข้อต่อสูงสุดที่ปลอดภัย (Strict Safe Joint Velocity Limits)
-# ปรับลดลงเหลือ 45°/s (จาก 180°/s) เพื่อรับประกันว่าจะไม่มีการกระชากหรือ Error ที่เครื่องหุ่นยนต์
-MAX_SAFE_JOINT_SPEED_DEG = 45.0
-MAX_SAFE_JOINT_SPEED = math.radians(MAX_SAFE_JOINT_SPEED_DEG)
+# - ข้อต่อแขนท่อนใหญ่ J1-J3 (Base, Shoulder, Elbow): 50°/s นุ่มนวล ปลอดภัยต่อโมเมนตัมแขนกล
+# - ข้อต่อข้อมือ J4-J6 (Wrist 1, Wrist 2, Wrist 3): 100°/s หมุนคล่องตัว ตอบสนองตามมือ VR ไว ไม่หนืด (พิกัดโรงงาน 360°/s)
+MAX_SAFE_JOINT_SPEED_ARM_DEG = 50.0
+MAX_SAFE_JOINT_SPEED_WRIST_DEG = 100.0
+MAX_SAFE_JOINT_SPEED_DEG = MAX_SAFE_JOINT_SPEED_ARM_DEG
+MAX_SAFE_JOINT_SPEED = math.radians(MAX_SAFE_JOINT_SPEED_ARM_DEG)
+MAX_SAFE_ARM_SPEED = math.radians(MAX_SAFE_JOINT_SPEED_ARM_DEG)
+MAX_SAFE_WRIST_SPEED = math.radians(MAX_SAFE_JOINT_SPEED_WRIST_DEG)
+JOINT_MAX_SPEEDS = [
+    MAX_SAFE_ARM_SPEED,    # Base
+    MAX_SAFE_ARM_SPEED,    # Shoulder
+    MAX_SAFE_ARM_SPEED,    # Elbow
+    MAX_SAFE_WRIST_SPEED,  # Wrist 1
+    MAX_SAFE_WRIST_SPEED,  # Wrist 2
+    MAX_SAFE_WRIST_SPEED,  # Wrist 3
+]
 
 
 def dh_matrix(a, d, alpha, theta):
@@ -231,14 +244,26 @@ def filter_cartesian_velocity(vx, vy, vz, wx=0.0, wy=0.0, wz=0.0, current_pose=N
     J, _ = compute_ur3e_jacobian(current_q)
     qd_pred = solve_dls_system(J, v_cmd, damping=0.02)
 
-    # 3a. ควบคุมความเร็วข้อต่อล่วงหน้า (Joint Speed Limiter <= 45°/s)
-    max_qd = max(abs(q_dot) for q_dot in qd_pred)
-    if max_qd > MAX_SAFE_JOINT_SPEED:
-        scale = MAX_SAFE_JOINT_SPEED / max_qd
+    # 3a. ควบคุมความเร็วข้อต่อล่วงหน้า (Joint Speed Limiter: แขน <= 50°/s, ข้อมือ <= 100°/s)
+    scales = []
+    worst_joint = 0
+    worst_ratio = 1.0
+    for i in range(6):
+        lim = JOINT_MAX_SPEEDS[i]
+        q_spd = abs(qd_pred[i])
+        if q_spd > lim:
+            r = lim / q_spd
+            scales.append(r)
+            if r < worst_ratio:
+                worst_ratio = r
+                worst_joint = i
+
+    if scales:
+        scale = min(scales)
         vx *= scale; vy *= scale; vz *= scale
         wx *= scale; wy *= scale; wz *= scale
         qd_pred = [q_dot * scale for q_dot in qd_pred]
-        reason = f"⚡ ชะลอความเร็ว: คุมข้อต่อไม่ให้หมุนเร็วเกิน ({math.degrees(max_qd):.1f}°/s > {MAX_SAFE_JOINT_SPEED_DEG:.0f}°/s)"
+        reason = f"⚡ ชะลอความเร็ว: คุมข้อต่อ {JOINT_NAMES[worst_joint]} ไม่ให้หมุนเร็วเกิน ({math.degrees(abs(qd_pred[worst_joint])/scale):.1f}°/s > {math.degrees(JOINT_MAX_SPEEDS[worst_joint]):.0f}°/s)"
 
     # 3b. ตรวจสอบขอบเขตข้อต่อแบบทิศทาง (Directional Joint Limit Protection)
     for i in range(6):
@@ -269,9 +294,14 @@ def filter_cartesian_velocity(vx, vy, vz, wx=0.0, wy=0.0, wz=0.0, current_pose=N
 
     # 4. ตรวจสอบความเร็วข้อต่อจริง (Active QD Feedback Damping)
     if qd_actual is not None:
-        actual_max_qd = max(abs(q_dot) for q_dot in qd_actual)
-        if actual_max_qd > MAX_SAFE_JOINT_SPEED:
-            damp = min(1.0, MAX_SAFE_JOINT_SPEED / actual_max_qd)
+        damp_scales = []
+        for i in range(6):
+            lim = JOINT_MAX_SPEEDS[i]
+            act_spd = abs(qd_actual[i])
+            if act_spd > lim:
+                damp_scales.append(lim / act_spd)
+        if damp_scales:
+            damp = min(damp_scales)
             vx *= damp; vy *= damp; vz *= damp
             wx *= damp; wy *= damp; wz *= damp
 
@@ -283,7 +313,7 @@ def filter_joint_velocity(qd, current_q, dt=0.02):
     ตรวจสอบและกรองความเร็วข้อต่อ qd ตามขอบเขตความปลอดภัย (Joint Limits & Singularity):
     - ระบบ Soft Braking: ชะลอความเร็วนุ่มนวลเมื่อเข้าใกล้ขอบเขต 5° เพื่อป้องกันกระชาก
     - ป้องกัน Wrist 2 เข้าใกล้จุด Singularity รอบ 0° (|q5| < 15°) แบบ Smooth Deceleration
-    - จำกัดความเร็วไม่ให้เกิน MAX_SAFE_JOINT_SPEED (45°/s) ป้องกัน Error 100%
+    - จำกัดความเร็วไม่ให้เกินขีดจำกัดปลอดภัย (แขน 50°/s, ข้อมือ 100°/s) ป้องกัน Error 100%
     """
     filtered_qd = list(qd)
     reason = "OK"
@@ -293,10 +323,11 @@ def filter_joint_velocity(qd, current_q, dt=0.02):
         q_val = current_q[i]
         lo, hi = JOINT_LIMITS_RAD[i]
         q_dot = filtered_qd[i]
+        lim = JOINT_MAX_SPEEDS[i]
 
         # 1. จำกัดความเร็วสูงสุด
-        if abs(q_dot) > MAX_SAFE_JOINT_SPEED:
-            filtered_qd[i] = math.copysign(MAX_SAFE_JOINT_SPEED, q_dot)
+        if abs(q_dot) > lim:
+            filtered_qd[i] = math.copysign(lim, q_dot)
             q_dot = filtered_qd[i]
 
         # 2. ระบบ Soft Braking ชะลอความเร็วก่อนถึงขอบเขต (ช่วง 5°)

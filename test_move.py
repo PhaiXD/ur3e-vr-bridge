@@ -30,8 +30,8 @@ ROBOT_IP = "192.168.1.20"
 SMOOTH_SPEED = 0.07         # m/s   (70 mm/s) ความเร็วที่ปลอดภัย นุ่มนวล ไม่กระชากจนเกิด Joint Speed Spike
 SMOOTH_ACCEL = 0.25         # m/s²  อัตราเร่งนุ่มนวล ป้องกัน Controller Jerk Error
 STOP_ACCEL = 0.80           # m/s²  อัตราการชะลอหยุดอย่างนิ่มนวลเมื่อปล่อยปุ่ม
-ROT_SPEED = 0.20            # rad/s (~11.5°/s) ความเร็วหมุนข้อต่อ นุ่มนวล ปลอดภัยต่อแรงเฉื่อยและเสถียรภาพหุ่น
-J_STREAM_ACCEL = 0.25       # rad/s² อัตราเร่งที่นุ่มนวลสำหรับการกดค้างแบบต่อเนื่อง (ป้องกัน Jerk & Protective Stop)
+ROT_SPEED = 0.55            # rad/s (~31.5°/s) ความเร็วหมุนข้อต่อ นุ่มนวล คล่องตัว ตอบสนองตามมือ VR ไว ไม่หนืด
+J_STREAM_ACCEL = 0.50       # rad/s² อัตราเร่งที่ตอบสนองฉับไวสำหรับการหมุนข้อมือ (ป้องกัน Jerk & Protective Stop)
 STREAM_TIME_BUFFER = 0.04   # วินาที (40 ms) Lookahead time window สำหรับ speedJ/speedL เพื่อ buffer network jitter
 J_SPEED = 0.80              # rad/s สำหรับ moveJ ตอนกลับ Safe Home
 J_ACCEL = 1.00              # rad/s² สำหรับ moveJ ตอนกลับ Safe Home
@@ -541,9 +541,13 @@ if __name__ == "__main__":
         rtde_r = rtde_receive.RTDEReceiveInterface(ROBOT_IP)
         gripper = RobotiqGripper(ROBOT_IP, GRIPPER_PORT)
 
-        # ตัวแปรสำหรับรับความเร็ว 6-DOF จาก VR Hand Tracking (thread-safe)
+        # ตัวแปรสำหรับรับความเร็ว 6-DOF และสถานะมือจาก VR Hand Tracking (thread-safe)
         vr_vel_lock = threading.Lock()
         vr_vel = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        vr_hand_state = {
+            "grip_pos": 0,
+            "tare_requested": False
+        }
         vr_invert = {
             "x": False, "y": False, "z": False,
             "roll": False, "pitch": False, "yaw": False
@@ -565,13 +569,23 @@ if __name__ == "__main__":
                 vr_vel[4] = wy
                 vr_vel[5] = wz
 
+        def on_vr_grip(p):
+            with vr_vel_lock:
+                vr_hand_state["grip_pos"] = p
+            gripper.set_position(p)
+
+        def on_vr_tare():
+            with vr_vel_lock:
+                vr_hand_state["tare_requested"] = True
+
         # เริ่มต้น VR Bridge Server (TCP Port 5555 สำหรับเชื่อม Unity Meta Quest Hand Tracking)
         try:
             from vr_bridge_server import VRBridgeServer
             vr_server = VRBridgeServer(
                 host="0.0.0.0", port=5555,
-                on_grip_callback=lambda p: gripper.set_position(p),
-                on_move_callback=on_vr_move
+                on_grip_callback=on_vr_grip,
+                on_move_callback=on_vr_move,
+                on_tare_callback=on_vr_tare
             )
             vr_server.start()
         except Exception as e:
@@ -602,9 +616,11 @@ if __name__ == "__main__":
         print("   [H]              : กลับท่า Safe Home (moveJ)")
         print("   [N]              : ปรับความเร็ว 50% (ชะลอครึ่งหนึ่ง สำหรับงานละเอียด)")
         print("   [M]              : ปรับความเร็ว 100% (ความเร็วปกติเต็มพิกัด)")
+        print("   [,]              : ปรับความเร็ว MAX เต็มพิกัด 300% (ขยับตามแขน VR แบบ Real-time ที่สุด ⚡)")
         print("   [1] / [2] / [3]  : สลับทิศทาง VR เชิงเส้น (1:หน้า-หลัง, 2:ซ้าย-ขวา, 3:ขึ้น-ลง)")
         print("   [4] / [5] / [6]  : สลับทิศทาง VR การหมุน (4:Roll บิดข้อมือ, 5:Pitch ก้ม-เงย, 6:Yaw หันซ้าย-ขวา)")
         print("   [T]              : Tare / เซ็ตศูนย์แรง Fz (วัดแรงบีบ Gripper แม่นยำ)")
+        print("   🖐️ Auto-Tare    : เมื่ออ้านิ้วระดับ <= 35/255 จะ Calibrate เซ็ตศูนย์แรง Fz อัตโนมัติทุกครั้ง (เหมือนกด [T])")
         print("   [Q]              : ออกจากโปรแกรม")
         print("   🥽 VR Hand      : ขยับมือ = แขนกลขยับตาม | บิด/ก้มเงย/หันมือ = แขนกลหมุนตาม (6-DOF) | หนีบนิ้ว = Gripper หนีบ")
         print("   🧤 bHaptics      : ถุงมือสั่นตอบสนองตามแรงจริง Fz จาก Gripper")
@@ -626,13 +642,32 @@ if __name__ == "__main__":
         ukf_force = UnscentedKalmanFilter1D(q_force=3.5, q_dforce=12.0, r_measure=0.20, alpha=0.3)
         smooth_grip_force = 0.0
         cached_gripper_pos = 0
+        speed_level = 1.0
+        fz_tare = 0.0
+
+        def perform_tare(reason="กดปุ่ม [T]"):
+            global fz_tare, smooth_grip_force
+            try:
+                tare_samples = [rtde_r.getActualTCPForce()[2] for _ in range(25)]
+                fz_tare = sum(tare_samples) / len(tare_samples)
+                ukf_force.reset(0.0)
+                smooth_grip_force = 0.0
+                print(f"🎯 [Tare Fz - {reason}]: เซ็ตศูนย์แรง Fz = {fz_tare:+.2f} N เรียบร้อย (ตัด Noise)")
+                if 'vr_server' in locals() and vr_server:
+                    sp = int(round(speed_level * 100)) if 'speed_level' in locals() else 100
+                    vr_server.send_feedback(cached_gripper_pos, 0.0, sp)
+                return True
+            except Exception as e:
+                print(f"⚠️ ไม่สามารถ Tare Fz ({reason}): {e}")
+                return False
 
         # 3. เซ็ตศูนย์แรง Fz อัตโนมัติ (Auto-Tare) ที่ท่า Safe Home เพื่อป้องกันการสั่นค้าง
         print("🎯 กำลังคาลิเบรตเซ็ตศูนย์แรง Fz (Auto-Tare)...")
-        tare_samples = [rtde_r.getActualTCPForce()[2] for _ in range(25)]
-        fz_tare = sum(tare_samples) / len(tare_samples)
-        ukf_force.reset(0.0)
-        print(f"   ✅ Auto-Tare Fz สำเร็จ! Fz_tare = {fz_tare:+.2f} N (ตัด Noise ออก 100% ไร้การสั่นค้าง)")
+        perform_tare("เริ่มต้นที่ Safe Home")
+
+        # ตัวแปรสถานะสำหรับ Auto-Tare เมื่ออ้านิ้ว <= 35 จาก 255
+        vr_hand_rearmed_for_tare = False
+        last_auto_tare_time = 0.0
 
         print("\n✅ พร้อมรับคำสั่ง! คลิกที่หน้าต่าง CMD แล้วกดปุ่มควบคุมได้เลย\n")
 
@@ -650,7 +685,8 @@ if __name__ == "__main__":
         prev_t_pressed = False
         prev_n_pressed = False
         prev_m_pressed = False
-        speed_level = 1.0  # 1.0 = 100%, 0.5 = 50%
+        prev_comma_pressed = False
+        speed_level = 1.0  # 1.0 = 100%, 0.5 = 50%, 3.0 = MAX 300%
         current_stream_qd = [0.0] * 6  # ตัวแปรจำความเร็วข้อต่อสำหรับการทำ Velocity Ramp นุ่มนวล ไร้ Jerk
 
         # ตัวแปรจับเวลาสำหรับ print force ตลอดเวลา (5 Hz)
@@ -693,13 +729,7 @@ if __name__ == "__main__":
                 move_to_safe_home(rtde_c, rtde_r)
                 time.sleep(0.3)
                 # Auto-Tare เมื่อกลับถึง Home เพื่อตัดการสั่นค้าง
-                try:
-                    tare_samples = [rtde_r.getActualTCPForce()[2] for _ in range(20)]
-                    fz_tare = sum(tare_samples) / len(tare_samples)
-                    ukf_force.reset(0.0)
-                    print(f"🎯 [Auto-Tare Home]: รีเซ็ตศูนย์แรง Fz = {fz_tare:+.2f} N เรียบร้อย (ไร้ Noise)")
-                except Exception:
-                    pass
+                perform_tare("กลับถึง Safe Home")
             prev_h_pressed = h_pressed
 
             # 4b. สลับทิศทางแกน VR Hand ทันที (Edge Trigger บนแป้นตัวเลขแถวบน ไม่ชนกับ Numpad)
@@ -749,27 +779,54 @@ if __name__ == "__main__":
             # 4c. เซ็ตศูนย์แรง Fz สำหรับวัดแรงบีบ Gripper (Tare Fz)
             p_t = keyboard.is_pressed('t')
             if p_t and not prev_t_pressed:
-                try:
-                    tare_samples = [rtde_r.getActualTCPForce()[2] for _ in range(25)]
-                    fz_tare = sum(tare_samples) / len(tare_samples)
-                    ukf_force.reset(0.0)
-                    print(f"🎯 [Tare Fz]: เซ็ตศูนย์แรง Fz = {fz_tare:+.2f} N เรียบร้อย (เฉลี่ย 25 ตัวอย่าง ตัด Noise)")
-                except Exception as e:
-                    print(f"⚠️ ไม่สามารถ Tare Fz: {e}")
+                perform_tare("กดปุ่ม [T]")
             prev_t_pressed = p_t
 
-            # 4d. ปรับระดับความเร็ว: [N] = 50%, [M] = 100% (Edge Trigger)
-            p_n = keyboard.is_pressed('n')
+            # Auto-Tare เมื่ออ้านิ้วระดับ <= 35 จาก 255 (หรือ Unity ส่งคำสั่ง TARE)
+            # มี Hysteresis: ต้องหนีบนิ้วเกิน 42 ก่อน จึงจะพร้อม Tare เมื่ออ้านิ้วกลับมา <= 35
+            with vr_vel_lock:
+                current_vr_grip = vr_hand_state["grip_pos"]
+                tare_req = vr_hand_state["tare_requested"]
+                vr_hand_state["tare_requested"] = False
+
+            if current_vr_grip >= 42:
+                vr_hand_rearmed_for_tare = True
+
+            now_t = time.time()
+            if tare_req:
+                perform_tare("คำสั่ง TARE จาก VR Hand (อ้านิ้ว <= 35)")
+                last_auto_tare_time = now_t
+                vr_hand_rearmed_for_tare = False
+            elif vr_hand_rearmed_for_tare and current_vr_grip <= 35:
+                if now_t - last_auto_tare_time >= 0.4:
+                    vr_hand_rearmed_for_tare = False
+                    last_auto_tare_time = now_t
+                    perform_tare(f"อ้านิ้วระดับ {current_vr_grip}/255")
+
+            # 4d. ปรับระดับความเร็ว: [N] = 50%, [M] = 100%, [,] = MAX เต็มพิกัด (Edge Trigger)
+            p_n = keyboard.is_pressed('n') or keyboard.is_pressed(49)
             if p_n and not prev_n_pressed:
                 speed_level = 0.5
                 print(f"\n🐢 [ระดับความเร็ว]: 50% (SMOOTH={SMOOTH_SPEED*speed_level*1000:.0f} mm/s, ROT={math.degrees(ROT_SPEED*speed_level):.1f}°/s - โหมดงานละเอียด)\n")
             prev_n_pressed = p_n
 
-            p_m = keyboard.is_pressed('m')
+            p_m = keyboard.is_pressed('m') or keyboard.is_pressed(50)
             if p_m and not prev_m_pressed:
                 speed_level = 1.0
                 print(f"\n🚀 [ระดับความเร็ว]: 100% (SMOOTH={SMOOTH_SPEED*speed_level*1000:.0f} mm/s, ROT={math.degrees(ROT_SPEED*speed_level):.1f}°/s - ความเร็วปกติเต็มพิกัด)\n")
             prev_m_pressed = p_m
+
+            # [,] / [<] / Scan code 51: MAX Full Speed (Real-time Arm Tracking)
+            p_comma = False
+            try:
+                p_comma = keyboard.is_pressed(',') or keyboard.is_pressed('<') or keyboard.is_pressed(51)
+            except Exception:
+                pass
+            if p_comma and not prev_comma_pressed:
+                speed_level = 3.0  # MAX Mode (300% speed, 210 mm/s, high acceleration 0.75 m/s²)
+                print(f"\n⚡⚡⚡ [ระดับความเร็ว]: MAX เต็มพิกัด 300% (SMOOTH={SMOOTH_SPEED*speed_level*1000:.0f} mm/s, ACCEL={min(1.0, SMOOTH_ACCEL*speed_level):.2f} m/s², ROT={math.degrees(ROT_SPEED*speed_level):.1f}°/s)")
+                print("   🎮 โหมด Real-time สูงสุด: ขยับตามแขนและมือ VR ฉับไว ไร้ความหน่วง!\n")
+            prev_comma_pressed = p_comma
 
             # 5. ควบคุม Gripper (กดค้าง = เคลื่อนที่ต่อเนื่อง, ปล่อย = หยุดทันที)
             eq_pressed = keyboard.is_pressed('=') or keyboard.is_pressed('+')
@@ -797,8 +854,8 @@ if __name__ == "__main__":
             # 6. คำนวณความเร็วเชิงเส้น (Linear) และความเร็วเชิงมุม (Angular) ตามระดับความเร็ว (Speed Level)
             cur_smooth_speed = SMOOTH_SPEED * speed_level
             cur_rot_speed = ROT_SPEED * speed_level
-            cur_smooth_accel = SMOOTH_ACCEL * speed_level
-            cur_stream_accel = J_STREAM_ACCEL * speed_level
+            cur_smooth_accel = min(1.0, SMOOTH_ACCEL * speed_level)
+            cur_stream_accel = min(1.0, J_STREAM_ACCEL * speed_level)
 
             vx = 0.0
             vy = 0.0
@@ -854,9 +911,9 @@ if __name__ == "__main__":
                 vy *= scale
                 vz *= scale
 
-            # จำกัดความเร็วเชิงมุมรวมไม่เกิน cur_rot_speed * 1.5 (ป้องกันหมุนสะบัดเกินกำหนด)
+            # จำกัดความเร็วเชิงมุมรวม (ให้ข้อมือหมุนตามมือ VR ได้อย่างคล่องตัว รวดเร็ว ไม่เบาหรือหนืดเกินไป)
             rot_mag = math.sqrt(wx*wx + wy*wy + wz*wz)
-            max_rot_limit = cur_rot_speed * 1.5
+            max_rot_limit = max(0.90, min(1.75, cur_rot_speed * 2.0))
             if rot_mag > max_rot_limit:
                 scale_rot = max_rot_limit / rot_mag
                 wx *= scale_rot
@@ -974,9 +1031,10 @@ if __name__ == "__main__":
             if clean_force == 0.0 and smooth_grip_force < 0.08:
                 smooth_grip_force = 0.0
 
-            # ส่ง Smooth Force Feedback (ผ่าน UKF) กลับไปให้ Unity VR Headset และถุงมือ bHaptics Glove ทุกรอบ 50 Hz (ลื่นไหลต่อเนื่อง 100% ไร้การขาดช่วง)
+            # ส่ง Smooth Force Feedback (ผ่าน UKF) กลับไปให้ Unity VR Headset และถุงมือ bHaptics Glove ทุกรอบ 50 Hz พร้อมแจ้งระดับความเร็ว
+            speed_pct = int(round(speed_level * 100))
             if 'vr_server' in locals() and vr_server:
-                vr_server.send_feedback(cached_gripper_pos, smooth_grip_force)
+                vr_server.send_feedback(cached_gripper_pos, smooth_grip_force, speed_pct)
 
             current_time = time.time()
             if current_time - last_force_print >= FORCE_PRINT_INTERVAL:
@@ -990,9 +1048,9 @@ if __name__ == "__main__":
                 z_pendant = z_mm - 400.0
 
                 # พิมพ์ค่าแรง Fz (Raw vs UKF Filtered) พร้อมพิกัดปัจจุบัน และระดับความเร็ว
-                speed_pct = int(round(speed_level * 100))
+                speed_label = "MAX ⚡ (300%)" if speed_level >= 2.0 else f"{speed_pct}%"
                 rot_hud = f" | Rot=[Wx:{math.degrees(wx):+.0f}, Wy:{math.degrees(wy):+.0f}, Wz:{math.degrees(wz):+.0f}]°/s" if (wx != 0 or wy != 0 or wz != 0) else ""
-                print(f"⚡ [force] Fz_raw={fz:+.2f} N (UKF Grip={smooth_grip_force:5.1f} N) | Base(mm)=[X:{x_mm:.0f}, Y:{y_mm:.0f}, Z:{z_mm:.0f}]{rot_hud} | Pendant Z={z_pendant:.0f}mm | Speed={speed_pct}%")
+                print(f"⚡ [force] Fz_raw={fz:+.2f} N (UKF Grip={smooth_grip_force:5.1f} N) | Base(mm)=[X:{x_mm:.0f}, Y:{y_mm:.0f}, Z:{z_mm:.0f}]{rot_hud} | Pendant Z={z_pendant:.0f}mm | Speed={speed_label}")
                 last_force_print = current_time
 
             # รอบลูป 50 Hz แบบชดเชยเวลาประมวลผล (Lock 20 ms ไร้ Jitter)

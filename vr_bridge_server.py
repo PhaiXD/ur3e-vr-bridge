@@ -22,11 +22,12 @@ class VRBridgeServer:
     - รับคำสั่ง: 'MOVE <vx> <vy> <vz> [wx] [wy] [wz]\n' (ความเร็ว 6-DOF จากมือ VR, หน่วย m/s และ rad/s)
     - ส่งสถานะกลับ: 'STATUS <pos> <force_n>\n'
     """
-    def __init__(self, host=DEFAULT_HOST, port=DEFAULT_PORT, on_grip_callback=None, on_move_callback=None):
+    def __init__(self, host=DEFAULT_HOST, port=DEFAULT_PORT, on_grip_callback=None, on_move_callback=None, on_tare_callback=None):
         self.host = host
         self.port = port
         self.on_grip_callback = on_grip_callback
         self.on_move_callback = on_move_callback
+        self.on_tare_callback = on_tare_callback
         self.server_sock = None
         self.client_sock = None
         self.running = False
@@ -62,12 +63,12 @@ class VRBridgeServer:
             self.server_sock = None
         print("🛑 [VR Bridge] ปิด TCP Server เรียบร้อย")
 
-    def send_feedback(self, actual_pos, force_n):
-        """ ส่งข้อมูลแรงบีบและตำแหน่งจริงกลับไปให้ Unity """
+    def send_feedback(self, actual_pos, force_n, speed_pct=100):
+        """ ส่งข้อมูลแรงบีบ ตำแหน่งจริง และระดับความเร็ว (Speed %) กลับไปให้ Unity """
         if not self.client_sock:
             return
         try:
-            msg = f"STATUS {int(actual_pos)} {float(force_n):.2f}\n"
+            msg = f"STATUS {int(actual_pos)} {float(force_n):.2f} {int(speed_pct)}\n"
             self.client_sock.sendall(msg.encode("ascii"))
         except Exception:
             pass
@@ -151,6 +152,14 @@ class VRBridgeServer:
                                                 self.on_move_callback(vx, vy, vz)
                                     except ValueError:
                                         pass
+
+                            # ประมวลผลคำสั่ง 'TARE' (เซ็ตศูนย์แรง Fz จากการอ้านิ้ว VR <= 35)
+                            elif line.startswith("TARE"):
+                                if self.on_tare_callback:
+                                    try:
+                                        self.on_tare_callback()
+                                    except Exception as ex:
+                                        print(f"⚠️ [VR Bridge] on_tare_callback error: {ex}")
 
                     except socket.timeout:
                         continue
