@@ -10,7 +10,8 @@ from ukf_filter import UnscentedKalmanFilter1D
 from robot_safety import (
     SHOULDER_Z, SPHERE_MAX, SPHERE_MIN, MIN_Z, MAX_Z,
     JOINT_LIMITS_DEG, JOINT_LIMITS_RAD, JOINT_NAMES,
-    MAX_SAFE_JOINT_SPEED_DEG, filter_cartesian_velocity
+    MAX_SAFE_JOINT_SPEED_DEG, filter_cartesian_velocity,
+    compute_tool_rotation_vectors
 )
 
 # ตั้งค่า stdout เป็น utf-8 เพื่อรองรับภาษาไทยและ emoji บน Windows Console
@@ -25,32 +26,34 @@ ROBOT_IP = "192.168.1.20"
 # Max TCP speed: 1 m/s
 
 # ==================== ความเร็วและการเคลื่อนที่แบบ Smooth (speedL) ====================
-SMOOTH_SPEED = 0.12     # m/s   ความเร็วเชิงเส้นต่อเนื่อง (Smooth & ไหลลื่น ไม่กระตุกทีละเซน)
-SMOOTH_ACCEL = 0.40     # m/s²  อัตราเร่งให้นุ่มนวล ไม่กระชาก
-STOP_ACCEL = 1.50       # m/s²  อัตราการชะลอหยุดเมื่อปล่อยปุ่ม
-J_SPEED = 1.05          # rad/s สำหรับ moveJ ตอนกลับ Safe Home
-J_ACCEL = 1.40          # rad/s²
+SMOOTH_SPEED = 0.07     # m/s   (70 mm/s) ความเร็วที่ปลอดภัย นุ่มนวล ไม่กระชากจนเกิด Joint Speed Spike
+SMOOTH_ACCEL = 0.25     # m/s²  อัตราเร่งนุ่มนวล ป้องกัน Controller Jerk Error
+STOP_ACCEL = 0.80       # m/s²  อัตราการชะลอหยุดอย่างนิ่มนวลเมื่อปล่อยปุ่ม
+ROT_SPEED = 0.35        # rad/s (~20°/s) ความเร็วการหมุนหัว Gripper กำลังพอเหมาะ ควบคุมได้ละเอียด
+J_SPEED = 0.80          # rad/s สำหรับ moveJ ตอนกลับ Safe Home
+J_ACCEL = 1.00          # rad/s²
 
 # ==================== การตั้งค่า Gripper (Robotiq) ====================
 GRIPPER_PORT = 63352
 GRIPPER_SPEED = 128     # 50% ของความเร็วสูงสุด (ช่วง 0-255)
 GRIPPER_FORCE = 128     # 50% ของแรงหนีบสูงสุด (ช่วง 0-255) ป้องกันการบีบวัตถุแตก
 
-# ==================== ท่า Home ของ UR3e (ท่ามาตรฐานที่ดีที่สุดสำหรับหยิบสารจากด้านข้าง) ====================
+# ==================== ท่า Home ของ UR3e (เสมือนแขนขวาของมนุษย์สำหรับงาน Lab และเขย่าหลอดทดลอง) ====================
 # [Base, Shoulder, Elbow, Wrist1, Wrist2, Wrist3] ในหน่วย radian
-# ท่า "Side-Pick Standard Lab Home":
-# 1. ปากจับ Robotiq เล็งตรงไปข้างหน้า (+X) ขนานระนาบพื้นโต๊ะ (Tool Z = [1, 0, 0])
-# 2. นิ้วก้ามปูเปิด-ปิดในแนวราบซ้าย-ขวา (Tool X = [0, -1, 0]) เพื่อโอบหนีบลำตัวทรงกระบอกของขวดสาร/หลอดทดลองจากด้านข้าง
-# 3. แผ่นหนีบของนิ้วตั้งฉากในแนวดิ่ง (Tool Y = [0, 0, -1]) แนบสนิทกับผิวทรงกระบอก ป้องกันขวดเอียงหรือสารหก
-# 4. วางระยะเอื้อมไว้ที่กึ่งกลางพอดี (ReachXY = 0.340 m) ห่างจากขอบเขต Lookahead 0.45 m ทำให้มีพื้นที่เอื้อมเข้าหาขวดได้อีก 11 cm ไม่ติด Limit
-# 5. Joint Margin ปลอดภัยสูงสุด >= 45° ทุกข้อต่อ (Wrist 1 อยู่ที่ -35° ห่างจาก Limit ถึง 45° และ Wrist 2 อยู่ที่ +90° หลบ Singularity สมบูรณ์แบบ)
+# ท่า "Human Right-Arm Surrogate Home":
+# 1. Base = -45°: หันเฉียง 45° ระหว่างโต๊ะด้านหน้าและชั้นวางด้านขวา เสมือนตำแหน่งไหล่ขวาของคนที่ยืนตรงกลาง
+# 2. Shoulder = -85°: แขนท่อนบนทอดลงในแนวดิ่งอย่างผ่อนคลาย คล้ายท่ายืนพักแขนพร้อมทำงาน
+# 3. Elbow = -90°: ข้อศอกงอ 90° จุดกึ่งกลางที่ให้ค่า Manipulability สูงสุด และโมเมนตัมต่ำสุด เหมาะที่สุดสำหรับการเขย่าหลอดทดลอง
+# 4. Wrist 1 = -5°: ข้อมือตรง ปากจับขนานพื้นและชี้ไปข้างหน้าพร้อมโอบหยิบหลอดทดลองจากด้านข้าง
+# 5. Wrist 2 = +90°: ตั้งฉาก หลบ Wrist Singularity ที่ 0° และ 180° ได้สมบูรณ์แบบ
+# 6. Wrist 3 = 0°: แกนหมุนอิสระ 360° กึ่งกลาง พร้อมสำหรับการหมุนปั่นสาร (Vortex Agitation) หรือเขย่าพลิกกลับ
 HOME_Q = [
-    math.radians(0),      # Base:     0°      (หันหน้าตรงเข้าหาโต๊ะทดลอง)
-    math.radians(-65),    # Shoulder: -65°    (ยกแขนท่อนบนพอดี มี headroom สูง)
-    math.radians(-80),    # Elbow:    -80°    (งอข้อศอก 80° หลบ Singularity และอยู่ห่างขีดจำกัด)
-    math.radians(-35),    # Wrist 1:  -35°    (ข้อมือทำมุมชดเชยให้ Tool ขนานพื้นตรงไปข้างหน้า, margin 45°)
-    math.radians(90),     # Wrist 2:  +90°    (หลบ Wrist Singularity ที่ 0° ได้มากที่สุด 90°)
-    math.radians(0),      # Wrist 3:  0°      (ปากจับเปิด-ปิดซ้ายขวา ผิวนิ้วแนวดิ่งขนานผิวขวด)
+    math.radians(-45),    # Base:     -45°    (ทิศทางกึ่งกลางระหว่างโต๊ะหน้าและชั้นขวา)
+    math.radians(-85),    # Shoulder: -85°    (แขนท่อนบนทอดลง)
+    math.radians(-90),    # Elbow:    -90°    (ศอกงอ 90° เหมาะที่สุดกับการเขย่าหลอดทดลอง)
+    math.radians(-5),     # Wrist 1:  -5°     (ข้อมือแนวระนาบ ปากจับขนานพื้น)
+    math.radians(90),     # Wrist 2:  +90°    (หลบ Singularity)
+    math.radians(0),      # Wrist 3:  0°      (แกนหมุนเขย่าสาร)
 ]
 
 # ==================== ขอบเขตความปลอดภัย (Safety Boundaries) ====================
@@ -537,19 +540,22 @@ if __name__ == "__main__":
         print(f"   • แขนกล: กดค้างเพื่อไหลต่อเนื่อง ({SMOOTH_SPEED} m/s) ปล่อยปุ่ม = ชะลอหยุดนุ่มนวล")
         print(f"   • VR Hand: ขยับมือใน VR ควบคุมแขนกล (MOVE → speedL)")
         print(f"   • Gripper: กดค้างเพื่อหนีบ/คลายต่อเนื่อง หรือ VR Pinch → Robotiq")
-        print(f"   • ท่า Home: Gripper ชี้ตรงไปข้างหน้า พร้อมหยิบจับ")
+        print(f"   • ท่า Home: เสมือนแขนขวาของมนุษย์ (ศอกงอ 90° พร้อมเขย่าหลอดทดลองและหยิบรอบตัว)")
         print(f"   • Cartesian Bounds: 3D Sphere R=[{SPHERE_MIN*1000:.0f}mm, {SPHERE_MAX*1000:.0f}mm], Z=[{MIN_Z*1000:.0f}mm, {MAX_Z*1000:.0f}mm]")
         print("   • Joint Limits: Wrist 1 ขยายถึง +85° (ลงต่ำได้ลึกขึ้น), บังคับศอกงอ >= 15° ป้องกัน Singularity")
-        print(f"   • Active Speed Limiter: คุมความเร็วหมุนข้อต่อ <= {MAX_SAFE_JOINT_SPEED_DEG:.0f}°/s ป้องกันหุ่นยนต์ Error")
+        print(f"   • Active Speed Limiter: คุมความเร็วหมุนข้อต่อ <= {MAX_SAFE_JOINT_SPEED_DEG:.0f}°/s + DLS ป้องกัน Error")
         print("   • Directional Protection: เมื่อติดขอบ ล็อกเฉพาะทิศที่ฝืน แต่ขยับถอยกลับได้ 100% ไม่ค้าง")
         print("==================================================")
         print("🎮 การควบคุม (กดค้าง = ไหลต่อเนื่อง, ปล่อย = ชะลอหยุดนุ่มนวล):")
         print("   [W] / [S]        : เดินหน้า / ถอยหลัง (แกน X)")
         print("   [A] / [D]        : ซ้าย / ขวา (แกน Y)")
         print("   [Space] / [Ctrl] : ขึ้น / ลง (แกน Z)")
+        print("   [Numpad 4] / [6] : Gripper หันซ้าย / หันขวา (Yaw)")
+        print("   [Numpad 8] / [2] : Gripper หันบน / หันล่าง (Pitch)")
+        print("   [Numpad 7] / [9] : Gripper หมุนทวนเข็ม / หมุนตามเข็ม (Roll)")
         print("   [=]              : Gripper หนีบเข้า (กดค้าง / ปล่อยหยุด)")
         print("   [-]              : Gripper คลายออก (กดค้าง / ปล่อยหยุด)")
-        print("   [H]              : กลับท่า Forward Home (moveJ)")
+        print("   [H]              : กลับท่า Human Right-Arm Home (moveJ)")
         print("   [1] / [2] / [3]  : สลับทิศทาง VR ทันที (1:หน้า-หลัง, 2:ซ้าย-ขวา, 3:ขึ้น-ลง)")
         print("   [T]              : Tare / เซ็ตศูนย์แรง Fz (วัดแรงบีบ Gripper แม่นยำ)")
         print("   [Q]              : ออกจากโปรแกรม")
@@ -691,10 +697,24 @@ if __name__ == "__main__":
                     pos, _, cou, _, desc = gripper.get_status()
                     gripper._print_gauge(pos, smooth_grip_force, cou, desc)
 
-            # 6. คำนวณความเร็วเชิงเส้น (Linear Velocity) จากการกดปุ่มและ/หรือ VR Hand Tracking
+            # 6. คำนวณความเร็วเชิงเส้น (Linear) และความเร็วเชิงมุม (Angular)
             vx = 0.0
             vy = 0.0
             vz = 0.0
+            wx = 0.0
+            wy = 0.0
+            wz = 0.0
+
+            # ฟังก์ชันช่วยเช็คปุ่ม Numpad (รองรับทั้งเปิดและปิด NumLock)
+            def is_num_key(n, alt_name=None):
+                try:
+                    if keyboard.is_pressed(f'num {n}'):
+                        return True
+                    if alt_name and keyboard.is_pressed(alt_name):
+                        return True
+                except Exception:
+                    pass
+                return False
 
             # 6a. ความเร็วจากคีย์บอร์ด (WASD + Space/Ctrl)
             if keyboard.is_pressed('w'):
@@ -720,7 +740,7 @@ if __name__ == "__main__":
             vy += vr_vy
             vz += vr_vz
 
-            # จำกัดความเร็วรวมไม่เกิน SMOOTH_SPEED (ป้องกันเร็วเกิน)
+            # จำกัดความเร็วเชิงเส้นรวมไม่เกิน SMOOTH_SPEED (ป้องกันเร็วเกิน)
             speed_mag = math.sqrt(vx*vx + vy*vy + vz*vz)
             if speed_mag > SMOOTH_SPEED:
                 scale = SMOOTH_SPEED / speed_mag
@@ -728,26 +748,67 @@ if __name__ == "__main__":
                 vy *= scale
                 vz *= scale
 
+            # 6c. หมุนปรับทิศทาง Gripper ด้วยปุ่ม Numpad (4/6: Yaw, 8/2: Pitch, 7/9: Roll)
+            yaw_ax, pitch_ax, roll_ax = compute_tool_rotation_vectors(current_pose)
+
+            # [Numpad 4] หันซ้าย (Yaw Left) / [Numpad 6] หันขวา (Yaw Right)
+            if is_num_key(4, 'left'):
+                wx += ROT_SPEED * yaw_ax[0]
+                wy += ROT_SPEED * yaw_ax[1]
+                wz += ROT_SPEED * yaw_ax[2]
+            if is_num_key(6, 'right'):
+                wx -= ROT_SPEED * yaw_ax[0]
+                wy -= ROT_SPEED * yaw_ax[1]
+                wz -= ROT_SPEED * yaw_ax[2]
+
+            # [Numpad 8] หันบน (Pitch Up) / [Numpad 2] หันล่าง (Pitch Down)
+            if is_num_key(8, 'up'):
+                wx += ROT_SPEED * pitch_ax[0]
+                wy += ROT_SPEED * pitch_ax[1]
+                wz += ROT_SPEED * pitch_ax[2]
+            if is_num_key(2, 'down'):
+                wx -= ROT_SPEED * pitch_ax[0]
+                wy -= ROT_SPEED * pitch_ax[1]
+                wz -= ROT_SPEED * pitch_ax[2]
+
+            # [Numpad 7] หมุนทวนเข็ม (Roll CCW) / [Numpad 9] หมุนตามเข็ม (Roll CW)
+            if is_num_key(7, 'home'):
+                wx += ROT_SPEED * roll_ax[0]
+                wy += ROT_SPEED * roll_ax[1]
+                wz += ROT_SPEED * roll_ax[2]
+            if is_num_key(9, 'page up'):
+                wx -= ROT_SPEED * roll_ax[0]
+                wy -= ROT_SPEED * roll_ax[1]
+                wz -= ROT_SPEED * roll_ax[2]
+
             # ------------------------------------------------------------
-            # ตรวจสอบและกรองความเร็วด้วยระบบความปลอดภัยทางจลนศาสตร์ (Kinematic Safety Filter)
-            # 1. 3D Spherical Workspace Clamping: ป้องกันการเอื้อมสุดแขนบริเวณเฉียงบน
-            # 2. ขอบเขตความสูง Z: ลงต่ำได้ถึง 50 mm โดยไม่ค้าง และถอย/ยกขึ้นได้เสมอ (Directional Release)
-            # 3. Joint Speed Spike Limiter: คำนวณความเร็วข้อต่อล่วงหน้าด้วย Jacobian คุมไม่ให้เกิน 75°/s ป้องกันหุ่นยนต์ Error
+            # ตรวจสอบและกรองความเร็วด้วยระบบความปลอดภัยทางจลนศาสตร์ 6-DOF (Kinematic Safety Filter)
+            # 1. 3D Spherical Workspace Clamping: ป้องกันการเอื้อมสุดแขน (รัศมี 585 mm)
+            # 2. ขอบเขตความสูง Z: ลงต่ำได้ถึง -50 mm (Pendant: -450 mm) และถอย/ยกขึ้นได้เสมอ (Directional Release)
+            # 3. DLS Joint Speed Spike Limiter: คุมความเร็วหมุนข้อต่อ <= 45°/s ป้องกันหุ่นยนต์ Error 100%
             # 4. Directional Joint Limit Protection: บล็อกเฉพาะทิศทางที่ฝืน แต่ขยับทิศตรงข้ามเพื่อถอยกลับได้ 100%
             # ------------------------------------------------------------
             qd_actual = rtde_r.getActualQd()
-            vx, vy, vz, safety_reason = filter_cartesian_velocity(
-                vx, vy, vz, current_pose, current_q, qd_actual=qd_actual, dt=0.12
+            vx, vy, vz, wx, wy, wz, safety_reason = filter_cartesian_velocity(
+                vx, vy, vz, wx, wy, wz, current_pose=current_pose, current_q=current_q, qd_actual=qd_actual, dt=0.12
             )
 
             # ------------------------------------------------------------
-            # สั่งเคลื่อนที่แขนกลแบบ speedL ต่อเนื่อง (Smooth Real-time Velocity Streaming)
+            # สั่งเคลื่อนที่แขนกลแบบ speedL ต่อเนื่อง 6-DOF (Smooth Real-time Velocity Streaming)
             # ไม่มีการหยุดทีละเซนติเมตร ไหลลื่นต่อเนื่องเหมือนจอยสติ๊ก
             # ------------------------------------------------------------
-            is_moving_now = (vx != 0.0 or vy != 0.0 or vz != 0.0)
+            is_moving_now = (vx != 0.0 or vy != 0.0 or vz != 0.0 or wx != 0.0 or wy != 0.0 or wz != 0.0)
+
+            # ตรวจสอบว่า RTDE Control Script ยังทำงานอยู่หรือไม่ ถ้าหลุดให้กู้คืนอัตโนมัติ
+            if not rtde_c.isProgramRunning():
+                try:
+                    rtde_c.reuploadScript()
+                    time.sleep(0.05)
+                except Exception:
+                    pass
 
             if is_moving_now:
-                rtde_c.speedL([vx, vy, vz, 0.0, 0.0, 0.0], SMOOTH_ACCEL, 0.0)
+                rtde_c.speedL([vx, vy, vz, wx, wy, wz], SMOOTH_ACCEL, 0.0)
                 was_moving_arm = True
             elif was_moving_arm:
                 rtde_c.speedStop(STOP_ACCEL)
@@ -764,13 +825,14 @@ if __name__ == "__main__":
             if current_time - last_force_print >= FORCE_PRINT_INTERVAL:
                 pos, _, cou, _, grip_desc = gripper.get_status()
 
-                # แปลงพิกัดเป็น mm เพื่อให้เทียบกับหน้าจอหุ่นยนต์ได้ตรงกัน
+                # แปลงพิกัดเป็น mm เพื่อให้เทียบกับหน้าจอหุ่นยนต์ได้ตรงกันทั้ง Base และ Pendant
                 x_mm = current_pose[0] * 1000.0
                 y_mm = current_pose[1] * 1000.0
                 z_mm = current_pose[2] * 1000.0
+                z_pendant = z_mm - 400.0
 
-                # พิมพ์ค่าแรง Fz (Raw vs UKF Filtered) พร้อมพิกัดปัจจุบันใน Base Frame
-                print(f"⚡ [force] Fz_raw={fz:+.2f} N (UKF Grip={smooth_grip_force:5.1f} N) | Pos_Base(mm)=[X:{x_mm:.0f}, Y:{y_mm:.0f}, Z:{z_mm:.0f}]")
+                # พิมพ์ค่าแรง Fz (Raw vs UKF Filtered) พร้อมพิกัดปัจจุบัน
+                print(f"⚡ [force] Fz_raw={fz:+.2f} N (UKF Grip={smooth_grip_force:5.1f} N) | Base(mm)=[X:{x_mm:.0f}, Y:{y_mm:.0f}, Z:{z_mm:.0f}] | Pendant Z={z_pendant:.0f}mm")
                 last_force_print = current_time
 
                 # ส่ง Smooth Force Feedback (ผ่าน UKF) กลับไปให้ Unity VR Headset และถุงมือ bHaptics Glove
