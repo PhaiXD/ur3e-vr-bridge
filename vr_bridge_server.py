@@ -22,13 +22,14 @@ class VRBridgeServer:
     - รับคำสั่ง: 'MOVE <vx> <vy> <vz> [wx] [wy] [wz]\n' (ความเร็ว 6-DOF จากมือ VR, หน่วย m/s และ rad/s)
     - ส่งสถานะกลับ: 'STATUS <pos> <force_n>\n'
     """
-    def __init__(self, host=DEFAULT_HOST, port=DEFAULT_PORT, on_grip_callback=None, on_move_callback=None, on_tare_callback=None, on_pose_callback=None):
+    def __init__(self, host=DEFAULT_HOST, port=DEFAULT_PORT, on_grip_callback=None, on_move_callback=None, on_tare_callback=None, on_pose_callback=None, on_home_callback=None):
         self.host = host
         self.port = port
         self.on_grip_callback = on_grip_callback
         self.on_move_callback = on_move_callback
         self.on_tare_callback = on_tare_callback
         self.on_pose_callback = on_pose_callback
+        self.on_home_callback = on_home_callback
         self.server_sock = None
         self.client_sock = None
         self.running = False
@@ -102,6 +103,10 @@ class VRBridgeServer:
                 self.client_sock = sock
                 self.client_address = addr
                 self.client_sock.settimeout(1.0)
+                try:
+                    self.client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                except Exception:
+                    pass
                 print(f"\n🎉 [VR Bridge] Unity เชื่อมต่อสำเร็จจาก {addr[0]}:{addr[1]}!")
 
                 buffer = ""
@@ -113,80 +118,94 @@ class VRBridgeServer:
                             break
 
                         buffer += data
+                        latest_grip_cmd = None
+                        latest_move_cmd = None
+                        latest_pose_cmd = None
+
                         while "\n" in buffer:
                             line, buffer = buffer.split("\n", 1)
                             line = line.strip()
                             if not line:
                                 continue
 
-                            # ประมวลผลคำสั่ง 'GRIP <pos> [force]'
                             if line.startswith("GRIP"):
-                                parts = line.split()
-                                if len(parts) >= 2:
-                                    try:
-                                        pos = int(parts[1])
-                                        pos = max(0, min(255, pos))
-                                        force = int(parts[2]) if len(parts) >= 3 else None
-                                        self.latest_pos = pos
-
-                                        if self.on_grip_callback:
-                                            try:
-                                                self.on_grip_callback(pos, force)
-                                            except TypeError:
-                                                self.on_grip_callback(pos)
-                                    except ValueError:
-                                        pass
-
-                            # ประมวลผลคำสั่ง 'MOVE <vx> <vy> <vz> [wx] [wy] [wz]'
-                            # ความเร็ว 6-DOF จากมือ VR ที่ Unity คำนวณแล้ว (linear: m/s, angular: rad/s)
+                                latest_grip_cmd = line
                             elif line.startswith("MOVE"):
-                                parts = line.split()
-                                if len(parts) >= 4:
-                                    try:
-                                        vx = float(parts[1])
-                                        vy = float(parts[2])
-                                        vz = float(parts[3])
-                                        wx = float(parts[4]) if len(parts) >= 7 else 0.0
-                                        wy = float(parts[5]) if len(parts) >= 7 else 0.0
-                                        wz = float(parts[6]) if len(parts) >= 7 else 0.0
-                                        self.latest_vel = [vx, vy, vz, wx, wy, wz]
-
-                                        if self.on_move_callback:
-                                            try:
-                                                self.on_move_callback(vx, vy, vz, wx, wy, wz)
-                                            except TypeError:
-                                                self.on_move_callback(vx, vy, vz)
-                                    except ValueError:
-                                        pass
-
-                            # ประมวลผลคำสั่ง 'TARE' (เซ็ตศูนย์แรง Fz จากการอ้านิ้ว VR <= 35)
+                                latest_move_cmd = line
+                            elif line.startswith("POSE"):
+                                latest_pose_cmd = line
                             elif line.startswith("TARE"):
                                 if self.on_tare_callback:
                                     try:
                                         self.on_tare_callback()
                                     except Exception as ex:
                                         print(f"⚠️ [VR Bridge] on_tare_callback error: {ex}")
-
-                            # ประมวลผลคำสั่ง 'POSE <x> <y> <z> <rx> <ry> <rz>' (Absolute Target Pose จาก Unity)
-                            elif line.startswith("POSE"):
-                                parts = line.split()
-                                if len(parts) >= 7:
+                            elif line.startswith("HOME"):
+                                if self.on_home_callback:
                                     try:
-                                        px = float(parts[1])
-                                        py = float(parts[2])
-                                        pz = float(parts[3])
-                                        prx = float(parts[4])
-                                        pry = float(parts[5])
-                                        prz = float(parts[6])
-                                        self.latest_target_pose = [px, py, pz, prx, pry, prz]
+                                        self.on_home_callback()
+                                    except Exception as ex:
+                                        print(f"⚠️ [VR Bridge] on_home_callback error: {ex}")
 
-                                        if self.on_pose_callback:
-                                            try:
-                                                self.on_pose_callback(px, py, pz, prx, pry, prz)
-                                            except Exception as ex:
-                                                print(f"⚠️ [VR Bridge] on_pose_callback error: {ex}")
-                                    except ValueError:
-                                        pass
+                        # 1. ประมวลผลคำสั่ง 'GRIP' ล่าสุดในรอบนี้ (ตัดคำสั่งเก่าตกค้าง ป้องกัน Delay)
+                        if latest_grip_cmd:
+                            parts = latest_grip_cmd.split()
+                            if len(parts) >= 2:
+                                try:
+                                    pos = int(parts[1])
+                                    pos = max(0, min(255, pos))
+                                    force = int(parts[2]) if len(parts) >= 3 else None
+                                    self.latest_pos = pos
+
+                                    if self.on_grip_callback:
+                                        try:
+                                            self.on_grip_callback(pos, force)
+                                        except TypeError:
+                                            self.on_grip_callback(pos)
+                                except ValueError:
+                                    pass
+
+                        # 2. ประมวลผลคำสั่ง 'MOVE' ล่าสุดในรอบนี้
+                        if latest_move_cmd:
+                            parts = latest_move_cmd.split()
+                            if len(parts) >= 4:
+                                try:
+                                    vx = float(parts[1])
+                                    vy = float(parts[2])
+                                    vz = float(parts[3])
+                                    wx = float(parts[4]) if len(parts) >= 7 else 0.0
+                                    wy = float(parts[5]) if len(parts) >= 7 else 0.0
+                                    wz = float(parts[6]) if len(parts) >= 7 else 0.0
+                                    self.latest_vel = [vx, vy, vz, wx, wy, wz]
+
+                                    if self.on_move_callback:
+                                        try:
+                                            self.on_move_callback(vx, vy, vz, wx, wy, wz)
+                                        except TypeError:
+                                            self.on_move_callback(vx, vy, vz)
+                                except ValueError:
+                                    pass
+
+                        # 3. ประมวลผลคำสั่ง 'POSE' ล่าสุดในรอบนี้ (ตัดคำสั่งซ้ำซ้อนตกค้างใน TCP Buffer ทันที)
+                        if latest_pose_cmd:
+                            parts = latest_pose_cmd.split()
+                            if len(parts) >= 7:
+                                try:
+                                    px = float(parts[1])
+                                    py = float(parts[2])
+                                    pz = float(parts[3])
+                                    prx = float(parts[4])
+                                    pry = float(parts[5])
+                                    prz = float(parts[6])
+                                    self.latest_target_pose = [px, py, pz, prx, pry, prz]
+
+                                    if self.on_pose_callback:
+                                        try:
+                                            self.on_pose_callback(px, py, pz, prx, pry, prz)
+                                        except Exception as ex:
+                                            print(f"⚠️ [VR Bridge] on_pose_callback error: {ex}")
+                                except ValueError:
+                                    pass
 
                     except socket.timeout:
                         continue

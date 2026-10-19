@@ -550,7 +550,8 @@ if __name__ == "__main__":
         }
         vr_hand_state = {
             "grip_pos": 0,
-            "tare_requested": False
+            "tare_requested": False,
+            "home_requested": False
         }
         vr_invert = {
             "x": False, "y": False, "z": False,
@@ -588,6 +589,10 @@ if __name__ == "__main__":
             with vr_vel_lock:
                 vr_hand_state["tare_requested"] = True
 
+        def on_vr_home():
+            with vr_vel_lock:
+                vr_hand_state["home_requested"] = True
+
         # เริ่มต้น VR Bridge Server (TCP Port 5555 สำหรับเชื่อม Unity Meta Quest Hand Tracking)
         try:
             from vr_bridge_server import VRBridgeServer
@@ -596,7 +601,8 @@ if __name__ == "__main__":
                 on_grip_callback=on_vr_grip,
                 on_move_callback=on_vr_move,
                 on_tare_callback=on_vr_tare,
-                on_pose_callback=on_vr_pose
+                on_pose_callback=on_vr_pose,
+                on_home_callback=on_vr_home
             )
             vr_server.start()
         except Exception as e:
@@ -731,16 +737,28 @@ if __name__ == "__main__":
                     rtde_c.speedStop(STOP_ACCEL)
                 break
 
-            # 4. ตรวจสอบปุ่มกลับ Home (Edge Trigger)
+            # 4. ตรวจสอบปุ่มกลับ Home (Edge Trigger จากแป้นพิมพ์ [H] หรือคำสั่ง HOME จากการจีบมือซ้าย 3 วินาทีใน VR)
+            with vr_vel_lock:
+                vr_home_req = vr_hand_state["home_requested"]
+                vr_hand_state["home_requested"] = False
+
             h_pressed = keyboard.is_pressed('h')
-            if h_pressed and not prev_h_pressed:
+            if (h_pressed and not prev_h_pressed) or vr_home_req:
+                trigger_source = "จีบมือซ้ายค้าง 3 วินาที (VR Left Hand Pinch)" if vr_home_req else "กดปุ่ม [H]"
+                print(f"\n🏠 ได้รับคำสั่งกลับ Safe Home จาก: {trigger_source}")
                 if was_moving_arm:
                     rtde_c.speedStop(STOP_ACCEL)
                     was_moving_arm = False
+                with vr_vel_lock:
+                    vr_pose_state["target_pose"] = None
+                    vr_vel = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
                 move_to_safe_home(rtde_c, rtde_r)
                 time.sleep(0.3)
+                current_pose = rtde_r.getActualTCPPose()
+                if 'vr_server' in locals() and vr_server:
+                    vr_server.send_feedback(cached_gripper_pos, smooth_grip_force, speed_pct, actual_tcp_pose=current_pose)
                 # Auto-Tare เมื่อกลับถึง Home เพื่อตัดการสั่นค้าง
-                perform_tare("กลับถึง Safe Home")
+                perform_tare(f"กลับถึง Safe Home ({trigger_source})")
             prev_h_pressed = h_pressed
 
             # 4b. สลับทิศทางแกน VR Hand ทันที (Edge Trigger บนแป้นตัวเลขแถวบน ไม่ชนกับ Numpad)
@@ -915,28 +933,79 @@ if __name__ == "__main__":
                 vr_vx, vr_vy, vr_vz = vr_vel[0], vr_vel[1], vr_vel[2]
                 vr_wx, vr_wy, vr_wz = vr_vel[3], vr_vel[4], vr_vel[5]
 
-            is_pose_mode = (tgt_p is not None and (now_pose_t - tgt_t) < 0.6)
+            is_pose_mode = (tgt_p is not None and (now_pose_t - tgt_t) < 3.0)
 
             if is_pose_mode:
                 # คำนวณ Cartesian Pose Error ระหว่าง Target กับ Current Pose จริง
                 pos_err, rot_err = compute_pose_error(tgt_p, current_pose)
 
-                # P-Controller Gains ปรับตามระดับความเร็ว (ตอบสนองฉับไวและนุ่มนวล)
-                kp_pos = 4.5 * speed_level
-                kp_rot = 3.5 * speed_level
-
-                # Deadband: ตำแหน่ง 1.0 mm, มุม 0.3° เพื่อความนิ่งสนิท ไร้การสั่นกระตุกที่จุดหยุด
+                # 1. ระยะห่างเชิงเส้น (Position Error Magnitude)
                 pos_dist = math.sqrt(pos_err[0]**2 + pos_err[1]**2 + pos_err[2]**2)
-                if pos_dist < 0.0010:
+
+                # กำหนด Deadband และ Smooth Transition Zone เพื่อแก้ปัญหา Hunting Oscillation (แกว่งไปมา)
+                # Deadband ขั้นต่ำ: 0.8 mm (นิ่งสนิท ไร้กระตุก)
+                # S-curve transition: 0.8 mm -> 2.5 mm ค่อยๆ เชื่อมต่อความเร็วอย่างต่อเนื่อง ไร้แรงกระชาก
+                pos_deadband_min = 0.0008
+                pos_deadband_max = 0.0025
+
+                if pos_dist <= pos_deadband_min:
                     v_p = [0.0, 0.0, 0.0]
                 else:
-                    v_p = [pos_err[i] * kp_pos for i in range(3)]
+                    blend = min(1.0, (pos_dist - pos_deadband_min) / (pos_deadband_max - pos_deadband_min))
+                    blend_smooth = blend * blend * (3.0 - 2.0 * blend)
 
+                    # Kinematic Deceleration Bounding (ป้องกัน Overshoot 100%):
+                    # v_stop = sqrt(2 * a_dec * d_eff) -> เพดานความเร็วสูงสุดที่การันตีว่าเบรกทันพอดีก่อนข้าม deadband
+                    a_dec = max(0.15, cur_smooth_accel * 0.75)
+                    d_eff = max(0.0, pos_dist - pos_deadband_min)
+                    v_stop_max = math.sqrt(2.0 * a_dec * d_eff)
+
+                    # Proportional Gain ปรับสมดุล (2.4 ตอบสนองฉับไว แต่ไม่เหวี่ยงจนหลุดการควบคุม)
+                    kp_pos = 2.4 * speed_level
+                    v_cmd_mag = min(pos_dist * kp_pos, v_stop_max, cur_smooth_speed) * blend_smooth
+
+                    dir_p = [pos_err[i] / pos_dist for i in range(3)]
+                    v_p = [dir_p[i] * v_cmd_mag for i in range(3)]
+
+                    # D-term Damping: หน่วงความเร็วต้านการแกว่งโดยใช้ Actual TCP Speed จริงของหุ่นยนต์ (Anti-Swing Damping)
+                    try:
+                        actual_tcp_spd = rtde_r.getActualTCPSpeed()
+                        kd_pos = 0.25
+                        for i in range(3):
+                            v_p[i] -= kd_pos * actual_tcp_spd[i]
+                    except Exception:
+                        pass
+
+                # 2. ระยะห่างเชิงมุม (Rotation Error Magnitude)
                 rot_dist = math.sqrt(rot_err[0]**2 + rot_err[1]**2 + rot_err[2]**2)
-                if rot_dist < math.radians(0.3):
+                rot_deadband_min = math.radians(0.25)
+                rot_deadband_max = math.radians(0.80)
+
+                if rot_dist <= rot_deadband_min:
                     w_p = [0.0, 0.0, 0.0]
                 else:
-                    w_p = [rot_err[i] * kp_rot for i in range(3)]
+                    rot_blend = min(1.0, (rot_dist - rot_deadband_min) / (rot_deadband_max - rot_deadband_min))
+                    rot_blend_smooth = rot_blend * rot_blend * (3.0 - 2.0 * rot_blend)
+
+                    # Kinematic Angular Deceleration Bounding
+                    alpha_dec = max(0.4, cur_stream_accel * 1.5)
+                    theta_eff = max(0.0, rot_dist - rot_deadband_min)
+                    w_stop_max = math.sqrt(2.0 * alpha_dec * theta_eff)
+
+                    kp_rot = 2.0 * speed_level
+                    w_cmd_mag = min(rot_dist * kp_rot, w_stop_max, cur_rot_speed * 1.5) * rot_blend_smooth
+
+                    dir_r = [rot_err[i] / rot_dist for i in range(3)]
+                    w_p = [dir_r[i] * w_cmd_mag for i in range(3)]
+
+                    # D-term Damping สำหรับมุมหมุนข้อมือ ป้องกันการสะบัดกลับ
+                    try:
+                        actual_tcp_spd = rtde_r.getActualTCPSpeed()
+                        kd_rot = 0.20
+                        for i in range(3):
+                            w_p[i] -= kd_rot * actual_tcp_spd[3 + i]
+                    except Exception:
+                        pass
 
                 vx += v_p[0]
                 vy += v_p[1]
