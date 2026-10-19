@@ -939,6 +939,14 @@ if __name__ == "__main__":
                 # คำนวณ Cartesian Pose Error ระหว่าง Target กับ Current Pose จริง
                 pos_err, rot_err = compute_pose_error(tgt_p, current_pose)
 
+                # รองรับการ Invert แกนพิกัดและแกนหมุนแบบ Real-time ด้วยปุ่มตัวเลข 1-6 (แถวบน)
+                if vr_invert["x"]: pos_err[0] = -pos_err[0]
+                if vr_invert["y"]: pos_err[1] = -pos_err[1]
+                if vr_invert["z"]: pos_err[2] = -pos_err[2]
+                if vr_invert["roll"]: rot_err[0] = -rot_err[0]
+                if vr_invert["pitch"]: rot_err[1] = -rot_err[1]
+                if vr_invert["yaw"]: rot_err[2] = -rot_err[2]
+
                 # 1. ระยะห่างเชิงเส้น (Position Error Magnitude)
                 pos_dist = math.sqrt(pos_err[0]**2 + pos_err[1]**2 + pos_err[2]**2)
 
