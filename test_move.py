@@ -12,7 +12,7 @@ from robot_safety import (
     JOINT_LIMITS_DEG, JOINT_LIMITS_RAD, JOINT_NAMES,
     MAX_SAFE_JOINT_SPEED_DEG, filter_cartesian_velocity,
     filter_joint_velocity, compute_ur3e_jacobian, solve_dls_system,
-    compute_tool_rotation_vectors
+    compute_tool_rotation_vectors, compute_pose_error
 )
 
 # ตั้งค่า stdout เป็น utf-8 เพื่อรองรับภาษาไทยและ emoji บน Windows Console
@@ -541,9 +541,13 @@ if __name__ == "__main__":
         rtde_r = rtde_receive.RTDEReceiveInterface(ROBOT_IP)
         gripper = RobotiqGripper(ROBOT_IP, GRIPPER_PORT)
 
-        # ตัวแปรสำหรับรับความเร็ว 6-DOF และสถานะมือจาก VR Hand Tracking (thread-safe)
+        # ตัวแปรสำหรับรับความเร็ว 6-DOF, Target Pose และสถานะมือจาก VR Hand Tracking (thread-safe)
         vr_vel_lock = threading.Lock()
         vr_vel = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        vr_pose_state = {
+            "target_pose": None,
+            "last_time": 0.0
+        }
         vr_hand_state = {
             "grip_pos": 0,
             "tare_requested": False
@@ -552,6 +556,12 @@ if __name__ == "__main__":
             "x": False, "y": False, "z": False,
             "roll": False, "pitch": False, "yaw": False
         }
+
+        def on_vr_pose(px, py, pz, prx, pry, prz):
+            """รับค่า Target Pose (x, y, z, rx, ry, rz) จาก Unity VR Hand Tracking"""
+            with vr_vel_lock:
+                vr_pose_state["target_pose"] = [px, py, pz, prx, pry, prz]
+                vr_pose_state["last_time"] = time.time()
 
         def on_vr_move(vx, vy, vz, wx=0.0, wy=0.0, wz=0.0):
             """รับค่า velocity 6-DOF จาก Unity VR Hand แล้วเก็บไว้ให้ main loop ใช้"""
@@ -585,7 +595,8 @@ if __name__ == "__main__":
                 host="0.0.0.0", port=5555,
                 on_grip_callback=on_vr_grip,
                 on_move_callback=on_vr_move,
-                on_tare_callback=on_vr_tare
+                on_tare_callback=on_vr_tare,
+                on_pose_callback=on_vr_pose
             )
             vr_server.start()
         except Exception as e:
@@ -891,17 +902,56 @@ if __name__ == "__main__":
             if keyboard.is_pressed('ctrl'):
                 vz -= cur_smooth_speed
 
-            # 6b. ความเร็ว 6-DOF จาก VR Hand Tracking (รวมกับคีย์บอร์ด)
-            # Unity ส่ง MOVE vx vy vz wx wy wz มาทาง TCP → เก็บใน vr_vel[]
+            # 6b. คำนวณความเร็ว 6-DOF จาก VR Hand Tracking
+            # รองรับ 2 ระบบ:
+            #   (1) Absolute / Anchor Target Pose Mode (เมื่อ Unity ส่ง POSE <x> <y> <z> <rx> <ry> <rz>)
+            #       - ติดตามพิกัดและมุมหมุนข้อมือจริงแบบ Closed-Loop P-Control
+            #       - ไม่ว่ามือ VR จะสะบัดหรือขยับเร็วแค่ไหน หุ่นยนต์จะวิ่งตามจน Error กลายเป็น 0.0 มม. และ 0.0° ครบ 100% ไม่มีขาด
+            #   (2) Velocity Mode (เมื่อ Unity ส่ง MOVE vx vy vz wx wy wz) สำรองแบบเดิม
+            now_pose_t = time.time()
             with vr_vel_lock:
+                tgt_p = list(vr_pose_state["target_pose"]) if vr_pose_state["target_pose"] is not None else None
+                tgt_t = vr_pose_state["last_time"]
                 vr_vx, vr_vy, vr_vz = vr_vel[0], vr_vel[1], vr_vel[2]
                 vr_wx, vr_wy, vr_wz = vr_vel[3], vr_vel[4], vr_vel[5]
-            vx += vr_vx * speed_level
-            vy += vr_vy * speed_level
-            vz += vr_vz * speed_level
-            wx += vr_wx * speed_level
-            wy += vr_wy * speed_level
-            wz += vr_wz * speed_level
+
+            is_pose_mode = (tgt_p is not None and (now_pose_t - tgt_t) < 0.6)
+
+            if is_pose_mode:
+                # คำนวณ Cartesian Pose Error ระหว่าง Target กับ Current Pose จริง
+                pos_err, rot_err = compute_pose_error(tgt_p, current_pose)
+
+                # P-Controller Gains ปรับตามระดับความเร็ว (ตอบสนองฉับไวและนุ่มนวล)
+                kp_pos = 4.5 * speed_level
+                kp_rot = 3.5 * speed_level
+
+                # Deadband: ตำแหน่ง 1.0 mm, มุม 0.3° เพื่อความนิ่งสนิท ไร้การสั่นกระตุกที่จุดหยุด
+                pos_dist = math.sqrt(pos_err[0]**2 + pos_err[1]**2 + pos_err[2]**2)
+                if pos_dist < 0.0010:
+                    v_p = [0.0, 0.0, 0.0]
+                else:
+                    v_p = [pos_err[i] * kp_pos for i in range(3)]
+
+                rot_dist = math.sqrt(rot_err[0]**2 + rot_err[1]**2 + rot_err[2]**2)
+                if rot_dist < math.radians(0.3):
+                    w_p = [0.0, 0.0, 0.0]
+                else:
+                    w_p = [rot_err[i] * kp_rot for i in range(3)]
+
+                vx += v_p[0]
+                vy += v_p[1]
+                vz += v_p[2]
+                wx += w_p[0]
+                wy += w_p[1]
+                wz += w_p[2]
+            else:
+                # Fallback: ความเร็วจาก MOVE แบบเปิดเดิม
+                vx += vr_vx * speed_level
+                vy += vr_vy * speed_level
+                vz += vr_vz * speed_level
+                wx += vr_wx * speed_level
+                wy += vr_wy * speed_level
+                wz += vr_wz * speed_level
 
             # จำกัดความเร็วเชิงเส้นรวมไม่เกิน cur_smooth_speed (ป้องกันเร็วเกิน)
             speed_mag = math.sqrt(vx*vx + vy*vy + vz*vz)
@@ -1031,10 +1081,10 @@ if __name__ == "__main__":
             if clean_force == 0.0 and smooth_grip_force < 0.08:
                 smooth_grip_force = 0.0
 
-            # ส่ง Smooth Force Feedback (ผ่าน UKF) กลับไปให้ Unity VR Headset และถุงมือ bHaptics Glove ทุกรอบ 50 Hz พร้อมแจ้งระดับความเร็ว
+            # ส่ง Smooth Force Feedback (ผ่าน UKF) กลับไปให้ Unity VR Headset และถุงมือ bHaptics Glove ทุกรอบ 50 Hz พร้อมแจ้งระดับความเร็วและพิกัดจริง
             speed_pct = int(round(speed_level * 100))
             if 'vr_server' in locals() and vr_server:
-                vr_server.send_feedback(cached_gripper_pos, smooth_grip_force, speed_pct)
+                vr_server.send_feedback(cached_gripper_pos, smooth_grip_force, speed_pct, actual_tcp_pose=current_pose)
 
             current_time = time.time()
             if current_time - last_force_print >= FORCE_PRINT_INTERVAL:

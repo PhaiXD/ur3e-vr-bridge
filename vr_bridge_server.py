@@ -22,12 +22,13 @@ class VRBridgeServer:
     - รับคำสั่ง: 'MOVE <vx> <vy> <vz> [wx] [wy] [wz]\n' (ความเร็ว 6-DOF จากมือ VR, หน่วย m/s และ rad/s)
     - ส่งสถานะกลับ: 'STATUS <pos> <force_n>\n'
     """
-    def __init__(self, host=DEFAULT_HOST, port=DEFAULT_PORT, on_grip_callback=None, on_move_callback=None, on_tare_callback=None):
+    def __init__(self, host=DEFAULT_HOST, port=DEFAULT_PORT, on_grip_callback=None, on_move_callback=None, on_tare_callback=None, on_pose_callback=None):
         self.host = host
         self.port = port
         self.on_grip_callback = on_grip_callback
         self.on_move_callback = on_move_callback
         self.on_tare_callback = on_tare_callback
+        self.on_pose_callback = on_pose_callback
         self.server_sock = None
         self.client_sock = None
         self.running = False
@@ -35,6 +36,7 @@ class VRBridgeServer:
         self.latest_pos = 0
         self.latest_force = 0.0
         self.latest_vel = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # vx, vy, vz, wx, wy, wz จาก VR
+        self.latest_target_pose = None                     # [x, y, z, rx, ry, rz] Target Pose จาก VR
         self.client_address = None
 
     def start(self):
@@ -63,12 +65,16 @@ class VRBridgeServer:
             self.server_sock = None
         print("🛑 [VR Bridge] ปิด TCP Server เรียบร้อย")
 
-    def send_feedback(self, actual_pos, force_n, speed_pct=100):
-        """ ส่งข้อมูลแรงบีบ ตำแหน่งจริง และระดับความเร็ว (Speed %) กลับไปให้ Unity """
+    def send_feedback(self, actual_pos, force_n, speed_pct=100, actual_tcp_pose=None):
+        """ ส่งข้อมูลแรงบีบ ตำแหน่งจริง ระดับความเร็ว (Speed %) และพิกัดจริงของหุ่นยนต์ (Actual TCP Pose) กลับไปให้ Unity """
         if not self.client_sock:
             return
         try:
-            msg = f"STATUS {int(actual_pos)} {float(force_n):.2f} {int(speed_pct)}\n"
+            if actual_tcp_pose is not None and len(actual_tcp_pose) >= 6:
+                x, y, z, rx, ry, rz = actual_tcp_pose[:6]
+                msg = f"STATUS {int(actual_pos)} {float(force_n):.2f} {int(speed_pct)} {x:.4f} {y:.4f} {z:.4f} {rx:.4f} {ry:.4f} {rz:.4f}\n"
+            else:
+                msg = f"STATUS {int(actual_pos)} {float(force_n):.2f} {int(speed_pct)}\n"
             self.client_sock.sendall(msg.encode("ascii"))
         except Exception:
             pass
@@ -160,6 +166,27 @@ class VRBridgeServer:
                                         self.on_tare_callback()
                                     except Exception as ex:
                                         print(f"⚠️ [VR Bridge] on_tare_callback error: {ex}")
+
+                            # ประมวลผลคำสั่ง 'POSE <x> <y> <z> <rx> <ry> <rz>' (Absolute Target Pose จาก Unity)
+                            elif line.startswith("POSE"):
+                                parts = line.split()
+                                if len(parts) >= 7:
+                                    try:
+                                        px = float(parts[1])
+                                        py = float(parts[2])
+                                        pz = float(parts[3])
+                                        prx = float(parts[4])
+                                        pry = float(parts[5])
+                                        prz = float(parts[6])
+                                        self.latest_target_pose = [px, py, pz, prx, pry, prz]
+
+                                        if self.on_pose_callback:
+                                            try:
+                                                self.on_pose_callback(px, py, pz, prx, pry, prz)
+                                            except Exception as ex:
+                                                print(f"⚠️ [VR Bridge] on_pose_callback error: {ex}")
+                                    except ValueError:
+                                        pass
 
                     except socket.timeout:
                         continue

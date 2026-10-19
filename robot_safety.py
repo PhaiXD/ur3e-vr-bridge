@@ -189,6 +189,64 @@ def compute_tool_rotation_vectors(pose):
     return yaw_axis, pitch_up_axis, tool_z
 
 
+def rotvec_to_mat(r):
+    """ แปลง Rotation Vector [rx, ry, rz] เป็น Rotation Matrix 3x3 ด้วยสูตร Rodrigues """
+    theta = math.sqrt(r[0]*r[0] + r[1]*r[1] + r[2]*r[2])
+    if theta < 1e-9:
+        return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+    kx, ky, kz = r[0]/theta, r[1]/theta, r[2]/theta
+    c = math.cos(theta)
+    s = math.sin(theta)
+    v = 1.0 - c
+    return [
+        [kx*kx*v + c,     kx*ky*v - kz*s, kx*kz*v + ky*s],
+        [kx*ky*v + kz*s,  ky*ky*v + c,    ky*kz*v - kx*s],
+        [kx*kz*v - ky*s,  ky*kz*v + kx*s, kz*kz*v + c    ]
+    ]
+
+
+def mat_mult3(A, B):
+    """ คูณเมทริกซ์ 3x3 """
+    return [
+        [sum(A[i][k]*B[k][j] for k in range(3)) for j in range(3)]
+        for i in range(3)
+    ]
+
+
+def mat_transpose(A):
+    """ สลับแถว-คอลัมน์เมทริกซ์ 3x3 (Transpose = Inverse สำหรับ Rotation Matrix) """
+    return [[A[j][i] for j in range(3)] for i in range(3)]
+
+
+def mat_to_rotvec(R):
+    """ แปลง Rotation Matrix 3x3 กลับเป็น Rotation Vector [rx, ry, rz] ในหน่วยเรเดียน """
+    tr = (R[0][0] + R[1][1] + R[2][2] - 1.0) / 2.0
+    tr = max(-1.0, min(1.0, tr))
+    theta = math.acos(tr)
+    if abs(theta) < 1e-6:
+        return [0.0, 0.0, 0.0]
+    denom = 2.0 * math.sin(theta)
+    kx = (R[2][1] - R[1][2]) / denom
+    ky = (R[0][2] - R[2][0]) / denom
+    kz = (R[1][0] - R[0][1]) / denom
+    return [kx * theta, ky * theta, kz * theta]
+
+
+def compute_pose_error(target_pose, current_pose):
+    """
+    คำนวณ Error ระหว่าง Target Pose กับ Current Pose ในระบบ Base Frame
+    คืนค่า:
+      - pos_err: [ex, ey, ez] (ระยะทางในแนวแกน X, Y, Z หน่วยเมตร)
+      - rot_err: [erx, ery, erz] (เวกเตอร์การหมุน Axis-Angle หน่วยเรเดียน)
+    """
+    pos_err = [target_pose[i] - current_pose[i] for i in range(3)]
+    R_t = rotvec_to_mat(target_pose[3:6])
+    R_c = rotvec_to_mat(current_pose[3:6])
+    R_err = mat_mult3(R_t, mat_transpose(R_c))
+    rot_err = mat_to_rotvec(R_err)
+    return pos_err, rot_err
+
+
 def filter_cartesian_velocity(vx, vy, vz, wx=0.0, wy=0.0, wz=0.0, current_pose=None, current_q=None, qd_actual=None, dt=0.10):
     """
     ระบบกรองความเร็วแบบครอบคลุมรอบด้าน 6-DOF (Full Kinematic Safety & Limit Prevention):
