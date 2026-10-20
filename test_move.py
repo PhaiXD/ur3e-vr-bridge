@@ -38,7 +38,7 @@ J_ACCEL = 1.00              # rad/s² สำหรับ moveJ ตอนกล�
 
 # อัตราเร็วและอัตราเร่งเฉพาะสำหรับ VR Hand Tracking (กำจัดแรงเฉื่อยและอาการดีเลย์เมื่อเคลื่อนไหวเร็ว)
 VR_TRACKING_MAX_SPEED = 0.22    # m/s (220 mm/s) เพดานความเร็วติดตามมือ VR (ขยับมือเร็ว หุ่นยนต์ตามทันทันที ไม่ตกค้าง)
-VR_TRACKING_MAX_ROT = 1.30      # rad/s (~75°/s) เพดานความเร็วหมุนข้อมือตาม VR Hand
+VR_TRACKING_MAX_ROT = 2.20      # rad/s (~126°/s) เพดานความเร็วหมุนข้อมือตาม VR Hand คล่องตัว ฉับไว ไร้ความหน่วง
 VR_BRAKE_ACCEL = 1.15           # m/s² อัตราเร่งเบรกชะลอหยุดฉับไว ตัดแรงเฉื่อย (Inertia) ให้หยุดสนิททันทีเมื่อมือหยุด
 
 
@@ -1019,11 +1019,11 @@ if __name__ == "__main__":
                     rot_blend_smooth = rot_blend * rot_blend * (3.0 - 2.0 * rot_blend)
 
                     # Kinematic Angular Deceleration Bounding (หยุดนิ่งสนิทเมื่อข้อมือหยุดหมุน)
-                    alpha_dec = max(1.8, cur_stream_accel * 3.0)
+                    alpha_dec = max(6.5, cur_stream_accel * 6.0)
                     theta_eff = max(0.0, rot_dist - rot_deadband_min)
                     w_stop_max = math.sqrt(2.0 * alpha_dec * theta_eff)
 
-                    kp_rot = 3.2 * speed_level
+                    kp_rot = 5.5 * speed_level
                     vr_rot_cap = max(cur_rot_speed * 1.5, VR_TRACKING_MAX_ROT * min(speed_level, 1.8))
                     w_cmd_mag = min(rot_dist * kp_rot, w_stop_max, vr_rot_cap) * rot_blend_smooth
 
@@ -1171,12 +1171,16 @@ if __name__ == "__main__":
                 dot_v = cur_v[0]*tgt_v[0] + cur_v[1]*tgt_v[1] + cur_v[2]*tgt_v[2]
                 is_reversing = (cur_v_mag > 0.020 and tgt_v_mag > 0.020 and dot_v < 0.0)
 
+                tgt_w_mag = math.sqrt(tgt_w[0]**2 + tgt_w[1]**2 + tgt_w[2]**2)
+
                 # อัตราเร่งเชิงเส้น (Linear Acceleration):
                 # - เมื่อกลับทิศทางขณะกำลังเคลื่อนที่เร็ว (is_reversing): ใช้อัตราเร่งเบรก VR_BRAKE_ACCEL (1.15 m/s²) เพื่อกลับตัวฉับไว
-                # - เมื่อกำลังเข้าสู่จุดหมายปลายทาง (is_settling < 25 mm): ใช้อัตราเร่งลดลงอย่างนุ่มนวล (0.35 m/s²) เป็น Settling Cushion ป้องกันการดีดโยกซ้ายขวา
+                # - เมื่อกำลังเข้าสู่จุดหมายปลายทาง (is_settling): ใช้อัตราเร่งลดลงอย่างนุ่มนวล (0.35 m/s²) เป็น Settling Cushion
+                #   *สำคัญมาก*: จะเข้าสู่ Settling Cushion ได้ก็ต่อเมื่อ "ทั้งตำแหน่งและมุมหมุน" ใกล้เป้าหมายแล้วจริงๆ
+                #   หากผู้ใช้กำลังหมุนข้อมืออยู่ (rot_dist >= 4.0°) แขนกลจะยังคงอยู่ใน Active Tracking เต็มพิกัด ไม่หน่วงทั้งแขน!
                 # - เมื่อติดตามมือปกติใน VR: ใช้ 0.90-1.15 m/s² เพื่อความฉับไวติดมือ ไม่หน่วง ไม่ล้าหลัง
                 # - เมื่อใช้คีย์บอร์ด WASD: ใช้ cur_smooth_accel (0.25 m/s²) นุ่มนวล
-                is_settling = is_pose_mode and (pos_dist < 0.025 or tgt_v_mag < 0.025)
+                is_settling = is_pose_mode and (pos_dist < 0.025 or tgt_v_mag < 0.025) and (rot_dist < math.radians(4.0) and tgt_w_mag < 0.08)
                 if is_reversing and cur_v_mag > 0.03:
                     a_lin = VR_BRAKE_ACCEL
                 elif is_settling:
@@ -1200,11 +1204,17 @@ if __name__ == "__main__":
                 # 2. Ramping ความเร็วเชิงมุม (Angular S-curve limiter สำหรับ Wrist Wx, Wy, Wz)
                 diff_w = [tgt_w[i] - cur_w[i] for i in range(3)]
                 diff_w_mag = math.sqrt(diff_w[0]**2 + diff_w[1]**2 + diff_w[2]**2)
-                is_settling_rot = is_pose_mode and (rot_dist < math.radians(3.0) or math.sqrt(tgt_w[0]**2 + tgt_w[1]**2 + tgt_w[2]**2) < 0.05)
-                if is_settling_rot:
-                    a_rot = 1.20  # rad/s² Settling cushion สำหรับการหมุนข้อมือ
+                cur_w_mag = math.sqrt(cur_w[0]**2 + cur_w[1]**2 + cur_w[2]**2)
+                dot_w = cur_w[0]*tgt_w[0] + cur_w[1]*tgt_w[1] + cur_w[2]*tgt_w[2]
+                is_reversing_rot = (cur_w_mag > 0.05 and tgt_w_mag > 0.05 and dot_w < 0.0)
+
+                is_settling_rot = is_pose_mode and (rot_dist < math.radians(2.5) and tgt_w_mag < 0.05)
+                if is_reversing_rot:
+                    a_rot = 14.0  # rad/s² สลับทิศทางหมุนข้อมือฉับไว ไร้ Lag
+                elif is_settling_rot:
+                    a_rot = 3.5   # rad/s² Settling cushion สำหรับการหมุนข้อมือ นุ่มนวล ไม่ดีด
                 else:
-                    a_rot = 3.0 if is_pose_mode else cur_stream_accel * 2.5
+                    a_rot = 10.0 if is_pose_mode else cur_stream_accel * 4.0  # rad/s² หมุนตามมือ VR ทันที ไม่หน่วง ไม่หนืด
                 max_step_w = a_rot * dt_loop
 
                 if diff_w_mag <= max_step_w:

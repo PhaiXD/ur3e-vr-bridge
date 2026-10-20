@@ -32,10 +32,10 @@ JOINT_LIMITS_RAD = [(math.radians(lo), math.radians(hi)) for lo, hi in JOINT_LIM
 JOINT_NAMES = ["Base", "Shoulder", "Elbow", "Wrist 1", "Wrist 2", "Wrist 3"]
 
 # ขีดจำกัดความเร็วข้อต่อสูงสุดที่ปลอดภัย (Strict Safe Joint Velocity Limits)
-# - ข้อต่อแขนท่อนใหญ่ J1-J3 (Base, Shoulder, Elbow): 50°/s นุ่มนวล ปลอดภัยต่อโมเมนตัมแขนกล
-# - ข้อต่อข้อมือ J4-J6 (Wrist 1, Wrist 2, Wrist 3): 100°/s หมุนคล่องตัว ตอบสนองตามมือ VR ไว ไม่หนืด (พิกัดโรงงาน 360°/s)
-MAX_SAFE_JOINT_SPEED_ARM_DEG = 50.0
-MAX_SAFE_JOINT_SPEED_WRIST_DEG = 100.0
+# - ข้อต่อแขนท่อนใหญ่ J1-J3 (Base, Shoulder, Elbow): 110°/s (พิกัดโรงงาน 180°/s) เพื่อให้หมุนข้อมือหรือเอื้อมเร็วได้ทัน ไร้ความหน่วงหนืด
+# - ข้อต่อข้อมือ J4-J6 (Wrist 1, Wrist 2, Wrist 3): 240°/s (พิกัดโรงงาน 360°/s) หมุนคล่องตัว ตอบสนองตามมือ VR ฉับไว ไร้แรงหน่วงทั้งแขน
+MAX_SAFE_JOINT_SPEED_ARM_DEG = 110.0
+MAX_SAFE_JOINT_SPEED_WRIST_DEG = 240.0
 MAX_SAFE_JOINT_SPEED_DEG = MAX_SAFE_JOINT_SPEED_ARM_DEG
 MAX_SAFE_JOINT_SPEED = math.radians(MAX_SAFE_JOINT_SPEED_ARM_DEG)
 MAX_SAFE_ARM_SPEED = math.radians(MAX_SAFE_JOINT_SPEED_ARM_DEG)
@@ -302,26 +302,42 @@ def filter_cartesian_velocity(vx, vy, vz, wx=0.0, wy=0.0, wz=0.0, current_pose=N
     J, _ = compute_ur3e_jacobian(current_q)
     qd_pred = solve_dls_system(J, v_cmd, damping=0.02)
 
-    # 3a. ควบคุมความเร็วข้อต่อล่วงหน้า (Joint Speed Limiter: แขน <= 50°/s, ข้อมือ <= 100°/s)
-    scales = []
-    worst_joint = 0
-    worst_ratio = 1.0
-    for i in range(6):
+    # 3a. ควบคุมความเร็วข้อต่อล่วงหน้าแบบแยกส่วน (Decoupled Joint Speed Limiter):
+    # - แขน J1-J3 <= 110°/s: หากเกินจะสเกลทั้งระบบอย่างได้สัดส่วน
+    # - ข้อมือ J4-J6 <= 240°/s: หากเกินจะสเกลเฉพาะความเร็วเชิงมุม (wx, wy, wz) ไม่ดึงความเร็วแขน (vx, vy, vz) ให้หน่วงทั้งแขน
+    arm_scales = []
+    wrist_scales = []
+    worst_arm_joint = 0
+    worst_wrist_joint = 3
+
+    for i in range(3):
         lim = JOINT_MAX_SPEEDS[i]
         q_spd = abs(qd_pred[i])
         if q_spd > lim:
             r = lim / q_spd
-            scales.append(r)
-            if r < worst_ratio:
-                worst_ratio = r
-                worst_joint = i
+            arm_scales.append(r)
+            worst_arm_joint = i
 
-    if scales:
-        scale = min(scales)
-        vx *= scale; vy *= scale; vz *= scale
-        wx *= scale; wy *= scale; wz *= scale
-        qd_pred = [q_dot * scale for q_dot in qd_pred]
-        reason = f"⚡ ชะลอความเร็ว: คุมข้อต่อ {JOINT_NAMES[worst_joint]} ไม่ให้หมุนเร็วเกิน ({math.degrees(abs(qd_pred[worst_joint])/scale):.1f}°/s > {math.degrees(JOINT_MAX_SPEEDS[worst_joint]):.0f}°/s)"
+    for i in range(3, 6):
+        lim = JOINT_MAX_SPEEDS[i]
+        q_spd = abs(qd_pred[i])
+        if q_spd > lim:
+            r = lim / q_spd
+            wrist_scales.append(r)
+            worst_wrist_joint = i
+
+    if arm_scales:
+        scale_arm = min(arm_scales)
+        vx *= scale_arm; vy *= scale_arm; vz *= scale_arm
+        wx *= scale_arm; wy *= scale_arm; wz *= scale_arm
+        qd_pred = [q_dot * scale_arm for q_dot in qd_pred]
+        reason = f"⚡ ชะลอความเร็วแขน: คุมข้อต่อ {JOINT_NAMES[worst_arm_joint]} ({math.degrees(abs(qd_pred[worst_arm_joint])/scale_arm):.1f}°/s > {math.degrees(JOINT_MAX_SPEEDS[worst_arm_joint]):.0f}°/s)"
+
+    if wrist_scales:
+        scale_wrist = min(wrist_scales)
+        wx *= scale_wrist; wy *= scale_wrist; wz *= scale_wrist
+        qd_pred = [qd_pred[i] if i < 3 else qd_pred[i] * scale_wrist for i in range(6)]
+        reason = f"⚡ ชะลอความเร็วข้อมือ: คุมข้อต่อ {JOINT_NAMES[worst_wrist_joint]} ({math.degrees(abs(qd_pred[worst_wrist_joint])/scale_wrist):.1f}°/s > {math.degrees(JOINT_MAX_SPEEDS[worst_wrist_joint]):.0f}°/s)"
 
     # 3b. ตรวจสอบขอบเขตข้อต่อแบบทิศทาง (Directional Joint Limit Protection)
     for i in range(6):
@@ -350,18 +366,28 @@ def filter_cartesian_velocity(vx, vy, vz, wx=0.0, wy=0.0, wz=0.0, current_pose=N
                 wx *= scale; wy *= scale; wz *= scale
                 reason = f"🛑 ข้อต่อ Wrist 2 เข้าใกล้ Singularity 0° ({math.degrees(q_val):.1f}°) - บล็อกทิศเข้าหา 0°"
 
-    # 4. ตรวจสอบความเร็วข้อต่อจริง (Active QD Feedback Damping)
+    # 4. ตรวจสอบความเร็วข้อต่อจริง (Active QD Feedback Damping แบบแยกส่วน)
     if qd_actual is not None:
-        damp_scales = []
-        for i in range(6):
+        arm_damp = []
+        wrist_damp = []
+        for i in range(3):
             lim = JOINT_MAX_SPEEDS[i]
             act_spd = abs(qd_actual[i])
             if act_spd > lim:
-                damp_scales.append(lim / act_spd)
-        if damp_scales:
-            damp = min(damp_scales)
-            vx *= damp; vy *= damp; vz *= damp
-            wx *= damp; wy *= damp; wz *= damp
+                arm_damp.append(lim / act_spd)
+        for i in range(3, 6):
+            lim = JOINT_MAX_SPEEDS[i]
+            act_spd = abs(qd_actual[i])
+            if act_spd > lim:
+                wrist_damp.append(lim / act_spd)
+
+        if arm_damp:
+            damp_a = min(arm_damp)
+            vx *= damp_a; vy *= damp_a; vz *= damp_a
+            wx *= damp_a; wy *= damp_a; wz *= damp_a
+        if wrist_damp:
+            damp_w = min(wrist_damp)
+            wx *= damp_w; wy *= damp_w; wz *= damp_w
 
     return vx, vy, vz, wx, wy, wz, reason
 
