@@ -12,12 +12,18 @@ DH = [
 ]
 
 SHOULDER_Z = 0.1519       # ความสูงจุดหมุน Shoulder จากระนาบฐานหุ่น (m)
-# ปรับขอบเขตพื้นที่ทำงานใหม่ตามที่ผู้ใช้ทดสอบจริง (พร้อม Buffer เผื่อระยะปลอดภัย)
-SPHERE_MAX = 0.585        # รัศมีทรงกลมสูงสุดจาก Shoulder (585 mm) ครอบคลุมจุดหน้าและข้างทั้งหมด
-SPHERE_MIN = 0.120        # รัศมีทรงกลมต่ำสุดจาก Shoulder (120 mm)
-MAX_REACH_XY = 0.570      # ระยะเอื้อมแนวราบสูงสุด (570 mm)
+# ===================== ขอบเขตพื้นที่ทำงาน (จากคู่มือ UR3e Manual §5.1, §5.3, §8.4) =====================
+# Outer Safety Sphere: Wrist center max reach = |a2|+|a3| = 456.75mm → with 10% margin = 410mm
+SPHERE_MAX = 0.410        # รัศมีทรงกลมสูงสุดจาก Shoulder (410 mm wrist center) ตาม Manual §5.1
+# Inner Safety Sphere: ป้องกัน forearm ชนกับ upper arm / wrist housing ชน shoulder
+SPHERE_MIN = 0.160        # รัศมีทรงกลมต่ำสุดจาก Shoulder (160 mm) ตาม Manual §5.3
+# Forbidden Vertical Cylinder: ป้องกัน Singularity บริเวณแกน Z ของฐาน (base radius 64mm + margin)
+CYLINDER_RADIUS = 0.095   # รัศมีทรงกระบอกห้ามรอบแกน Z ฐาน (95 mm) ตาม Manual §5.3.1
+MAX_REACH_XY = 0.400      # ระยะเอื้อมแนวราบสูงสุด (400 mm) สอดคล้อง SPHERE_MAX
 MIN_Z = -0.050            # ความสูงต่ำสุด Base Frame (-50 mm หรือ -450 mm บน Pendant ถึงชั้นวางล่าง)
 MAX_Z = 0.720             # ความสูงสูงสุด Base Frame (720 mm หรือ +320 mm บน Pendant)
+# TCP Linear Speed Cap: ต่ำกว่า Reduced Mode 750 mm/s มากพอสำหรับ VR teleoperation ที่ปลอดภัย
+CARTESIAN_TCP_SPEED_CAP = 0.350  # m/s (350 mm/s) ตาม Manual §7 Recommended
 
 # ขอบเขตมุมข้อต่อ (Joint Limits) ที่ปลอดภัยและยืดหยุ่นสำหรับงาน Lab
 JOINT_LIMITS_DEG = [
@@ -31,11 +37,11 @@ JOINT_LIMITS_DEG = [
 JOINT_LIMITS_RAD = [(math.radians(lo), math.radians(hi)) for lo, hi in JOINT_LIMITS_DEG]
 JOINT_NAMES = ["Base", "Shoulder", "Elbow", "Wrist 1", "Wrist 2", "Wrist 3"]
 
-# ขีดจำกัดความเร็วข้อต่อสูงสุดที่ปลอดภัย (Strict Safe Joint Velocity Limits)
-# - ข้อต่อแขนท่อนใหญ่ J1-J3 (Base, Shoulder, Elbow): 110°/s (พิกัดโรงงาน 180°/s) เพื่อให้หมุนข้อมือหรือเอื้อมเร็วได้ทัน ไร้ความหน่วงหนืด
-# - ข้อต่อข้อมือ J4-J6 (Wrist 1, Wrist 2, Wrist 3): 240°/s (พิกัดโรงงาน 360°/s) หมุนคล่องตัว ตอบสนองตามมือ VR ฉับไว ไร้แรงหน่วงทั้งแขน
-MAX_SAFE_JOINT_SPEED_ARM_DEG = 110.0
-MAX_SAFE_JOINT_SPEED_WRIST_DEG = 240.0
+# ===================== ขีดจำกัดความเร็วข้อต่อ (จากคู่มือ UR3e Manual §2.1, §8.4.6) =====================
+# - ข้อต่อแขนท่อนใหญ่ J1-J3: 130°/s (72% ของ Safety Limit 180°/s) ตาม Manual §7
+# - ข้อต่อข้อมือ J4-J6: 180°/s (Conservative สำหรับ VR teleoperation จาก preset 191°/s) ตาม Manual §7
+MAX_SAFE_JOINT_SPEED_ARM_DEG = 130.0
+MAX_SAFE_JOINT_SPEED_WRIST_DEG = 180.0
 MAX_SAFE_JOINT_SPEED_DEG = MAX_SAFE_JOINT_SPEED_ARM_DEG
 MAX_SAFE_JOINT_SPEED = math.radians(MAX_SAFE_JOINT_SPEED_ARM_DEG)
 MAX_SAFE_ARM_SPEED = math.radians(MAX_SAFE_JOINT_SPEED_ARM_DEG)
@@ -247,6 +253,54 @@ def compute_pose_error(target_pose, current_pose):
     return pos_err, rot_err
 
 
+def compute_safety_proximity(current_pose, current_q=None, qd_actual=None):
+    """
+    คำนวณอัตราส่วนความใกล้ (Proximity Ratio 0.0–1.0) ต่อขอบเขตความปลอดภัยทุกด้าน:
+    - outer_ratio: 0.0 = อยู่กลาง, 1.0 = ถึงขอบ SPHERE_MAX (ไกลเกินไป)
+    - inner_ratio: 0.0 = อยู่ไกล, 1.0 = ถึงขอบ SPHERE_MIN (ใกล้ตัวเกินไป)
+    - cylinder_ratio: 0.0 = อยู่ไกลแกน Z, 1.0 = ถึงขอบ CYLINDER_RADIUS (Singularity zone)
+    - speed_ratio: 0.0 = ช้า, 1.0 = ถึงเพดานความเร็วข้อต่อ
+    ใช้ส่งไปให้ Unity แสดงตาข่ายทรงกลมแดงเตือนเมื่อเข้าใกล้ขอบเขต
+    """
+    x, y, z = current_pose[0], current_pose[1], current_pose[2]
+    dz = z - SHOULDER_Z
+    d_3d = math.sqrt(x*x + y*y + dz*dz)
+    xy_dist = math.sqrt(x*x + y*y)
+
+    # Outer sphere: ratio เข้า 1.0 เมื่อเข้าใกล้ SPHERE_MAX
+    outer_ratio = min(1.0, d_3d / SPHERE_MAX) if SPHERE_MAX > 0 else 0.0
+
+    # Inner sphere: ratio เข้า 1.0 เมื่อเข้าใกล้ SPHERE_MIN
+    if d_3d > 1e-4:
+        inner_ratio = min(1.0, SPHERE_MIN / d_3d)
+    else:
+        inner_ratio = 1.0
+
+    # Vertical cylinder: ratio เข้า 1.0 เมื่อเข้าใกล้แกน Z ฐาน
+    if xy_dist > 1e-4:
+        cylinder_ratio = min(1.0, CYLINDER_RADIUS / xy_dist)
+    else:
+        cylinder_ratio = 1.0
+
+    # Speed ratio: ตรวจสอบความเร็วข้อต่อจริงเทียบกับเพดาน
+    speed_ratio = 0.0
+    if qd_actual is not None:
+        for i in range(6):
+            lim = JOINT_MAX_SPEEDS[i]
+            if lim > 0:
+                r = abs(qd_actual[i]) / lim
+                if r > speed_ratio:
+                    speed_ratio = r
+        speed_ratio = min(1.0, speed_ratio)
+
+    return {
+        "outer_ratio": round(outer_ratio, 3),
+        "inner_ratio": round(inner_ratio, 3),
+        "cylinder_ratio": round(cylinder_ratio, 3),
+        "speed_ratio": round(speed_ratio, 3),
+    }
+
+
 def filter_cartesian_velocity(vx, vy, vz, wx=0.0, wy=0.0, wz=0.0, current_pose=None, current_q=None, qd_actual=None, dt=0.10):
     """
     ระบบกรองความเร็วแบบครอบคลุมรอบด้าน 6-DOF (Full Kinematic Safety & Limit Prevention):
@@ -264,6 +318,7 @@ def filter_cartesian_velocity(vx, vy, vz, wx=0.0, wy=0.0, wz=0.0, current_pose=N
     x, y, z = current_pose[0], current_pose[1], current_pose[2]
     dz = z - SHOULDER_Z
     d_3d = math.sqrt(x*x + y*y + dz*dz)
+    xy_dist = math.sqrt(x*x + y*y)
 
     # 1. ตรวจสอบขอบเขตทรงกลม 3D จาก Shoulder
     if d_3d > 1e-4:
@@ -288,6 +343,20 @@ def filter_cartesian_velocity(vx, vy, vz, wx=0.0, wy=0.0, wz=0.0, current_pose=N
         vz -= v_rad * nz
         reason = f"🛑 ใกล้ Shoulder เกินไป ({d_3d*1000:.0f}mm) - ป้องกันชนตัวเอง"
 
+    # 1b. ตรวจสอบ Forbidden Vertical Cylinder รอบแกน Z ฐาน (Singularity Zone)
+    # เมื่อ Tool เข้าใกล้แกน Z ฐาน → Base joint และ Wrist จะหมุนเร็วมากแม้ TCP ช้า → Protective Stop
+    if xy_dist > 1e-4:
+        cyl_nx, cyl_ny = x / xy_dist, y / xy_dist
+    else:
+        cyl_nx, cyl_ny = 1.0, 0.0
+    v_cyl_inward = -(vx * cyl_nx + vy * cyl_ny)  # ค่าบวก = พุ่งเข้าหาแกน Z
+    pred_xy = xy_dist - v_cyl_inward * dt
+    if pred_xy < CYLINDER_RADIUS and v_cyl_inward > 0:
+        # บล็อกเฉพาะทิศทางเข้าหาแกน Z แต่ปล่อยให้หนีออกได้
+        vx += v_cyl_inward * cyl_nx
+        vy += v_cyl_inward * cyl_ny
+        reason = f"🛑 Singularity Zone ({xy_dist*1000:.0f}mm จากแกน Z) - ป้องกัน Base/Wrist หมุนเร็วเกิน"
+
     # 2. ตรวจสอบขอบเขตแกน Z (ความสูง)
     pred_z = z + vz * dt
     if pred_z < MIN_Z and vz < 0:
@@ -296,6 +365,13 @@ def filter_cartesian_velocity(vx, vy, vz, wx=0.0, wy=0.0, wz=0.0, current_pose=N
     elif pred_z > MAX_Z and vz > 0:
         vz = 0.0
         reason = f"🛑 ขอบเขต Z สูงสุด ({z*1000:.0f}mm) - ล็อกขึ้น แต่ยกลงได้"
+
+    # 2b. จำกัดความเร็ว TCP Linear ไม่ให้เกิน CARTESIAN_TCP_SPEED_CAP (350 mm/s) ตาม Manual §7
+    tcp_spd = math.sqrt(vx*vx + vy*vy + vz*vz)
+    if tcp_spd > CARTESIAN_TCP_SPEED_CAP:
+        tcp_scale = CARTESIAN_TCP_SPEED_CAP / tcp_spd
+        vx *= tcp_scale; vy *= tcp_scale; vz *= tcp_scale
+        reason = f"⚡ TCP Speed Cap ({tcp_spd*1000:.0f}mm/s > {CARTESIAN_TCP_SPEED_CAP*1000:.0f}mm/s)"
 
     # 3. คำนวณความเร็วข้อต่อล่วงหน้าด้วย Jacobian + DLS (Damped Least Squares)
     v_cmd = [vx, vy, vz, wx, wy, wz]

@@ -66,14 +66,27 @@ class VRBridgeServer:
             self.server_sock = None
         print("🛑 [VR Bridge] ปิด TCP Server เรียบร้อย")
 
-    def send_feedback(self, actual_pos, force_n, speed_pct=100, actual_tcp_pose=None):
-        """ ส่งข้อมูลแรงบีบ ตำแหน่งจริง ระดับความเร็ว (Speed %) และพิกัดจริงของหุ่นยนต์ (Actual TCP Pose) กลับไปให้ Unity """
+    def send_feedback(self, actual_pos, force_n, speed_pct=100, actual_tcp_pose=None, safety_proximity=None):
+        """
+        ส่งข้อมูลแรงบีบ ตำแหน่งจริง ระดับความเร็ว (Speed %) พิกัดจริง (Actual TCP Pose)
+        และอัตราส่วนความใกล้ขอบเขตความปลอดภัย (Safety Proximity Ratios) กลับไปให้ Unity
+        Format: STATUS <pos> <force> <speed%> <x> <y> <z> <rx> <ry> <rz> [<outer_r> <inner_r> <cyl_r> <spd_r>]
+        """
         if not self.client_sock:
             return
         try:
             if actual_tcp_pose is not None and len(actual_tcp_pose) >= 6:
                 x, y, z, rx, ry, rz = actual_tcp_pose[:6]
-                msg = f"STATUS {int(actual_pos)} {float(force_n):.2f} {int(speed_pct)} {x:.4f} {y:.4f} {z:.4f} {rx:.4f} {ry:.4f} {rz:.4f}\n"
+                base_msg = f"STATUS {int(actual_pos)} {float(force_n):.2f} {int(speed_pct)} {x:.4f} {y:.4f} {z:.4f} {rx:.4f} {ry:.4f} {rz:.4f}"
+                # Append safety proximity ratios if available
+                if safety_proximity is not None:
+                    o_r = safety_proximity.get("outer_ratio", 0.0)
+                    i_r = safety_proximity.get("inner_ratio", 0.0)
+                    c_r = safety_proximity.get("cylinder_ratio", 0.0)
+                    s_r = safety_proximity.get("speed_ratio", 0.0)
+                    msg = f"{base_msg} {o_r:.3f} {i_r:.3f} {c_r:.3f} {s_r:.3f}\n"
+                else:
+                    msg = f"{base_msg}\n"
             else:
                 msg = f"STATUS {int(actual_pos)} {float(force_n):.2f} {int(speed_pct)}\n"
             self.client_sock.sendall(msg.encode("ascii"))

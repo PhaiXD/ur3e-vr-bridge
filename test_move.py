@@ -8,11 +8,13 @@ import rtde_control
 import rtde_receive
 from ukf_filter import UnscentedKalmanFilter1D
 from robot_safety import (
-    SHOULDER_Z, SPHERE_MAX, SPHERE_MIN, MIN_Z, MAX_Z,
+    SHOULDER_Z, SPHERE_MAX, SPHERE_MIN, CYLINDER_RADIUS, CARTESIAN_TCP_SPEED_CAP,
+    MIN_Z, MAX_Z,
     JOINT_LIMITS_DEG, JOINT_LIMITS_RAD, JOINT_NAMES,
     MAX_SAFE_JOINT_SPEED_DEG, filter_cartesian_velocity,
     filter_joint_velocity, compute_ur3e_jacobian, solve_dls_system,
-    compute_tool_rotation_vectors, compute_pose_error
+    compute_tool_rotation_vectors, compute_pose_error,
+    compute_safety_proximity
 )
 
 # ตั้งค่า stdout เป็น utf-8 เพื่อรองรับภาษาไทยและ emoji บน Windows Console
@@ -1263,10 +1265,13 @@ if __name__ == "__main__":
             if clean_force == 0.0 and smooth_grip_force < 0.08:
                 smooth_grip_force = 0.0
 
-            # ส่ง Smooth Force Feedback (ผ่าน UKF) กลับไปให้ Unity VR Headset และถุงมือ bHaptics Glove ทุกรอบ 50 Hz พร้อมแจ้งระดับความเร็วและพิกัดจริง
+            # ส่ง Smooth Force Feedback (ผ่าน UKF) กลับไปให้ Unity VR Headset และถุงมือ bHaptics Glove ทุกรอบ 50 Hz
+            # พร้อมแจ้งระดับความเร็ว พิกัดจริง และอัตราส่วนความใกล้ขอบเขตความปลอดภัย (Safety Proximity)
             speed_pct = int(round(speed_level * 100))
+            qd_for_safety = rtde_r.getActualQd()
+            safety_prox = compute_safety_proximity(current_pose, current_q, qd_for_safety)
             if 'vr_server' in locals() and vr_server:
-                vr_server.send_feedback(cached_gripper_pos, smooth_grip_force, speed_pct, actual_tcp_pose=current_pose)
+                vr_server.send_feedback(cached_gripper_pos, smooth_grip_force, speed_pct, actual_tcp_pose=current_pose, safety_proximity=safety_prox)
 
             current_time = time.time()
             if current_time - last_force_print >= FORCE_PRINT_INTERVAL:
