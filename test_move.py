@@ -711,6 +711,8 @@ if __name__ == "__main__":
         speed_level = 1.0  # 1.0 = 100%, 0.5 = 50%, 3.0 = MAX 300%
         current_stream_qd = [0.0] * 6  # ตัวแปรจำความเร็วข้อต่อสำหรับการทำ Velocity Ramp นุ่มนวล ไร้ Jerk
         current_cart_cmd = [0.0] * 6   # ตัวแปรจำความเร็ว Cartesian 6-DOF สำหรับทำ S-curve Velocity Ramp ไร้แรงกระชากเมื่อกลับทิศทาง
+        is_pose_settled = False        # สถานะหยุดนิ่งสนิทตามพิกัด (Hysteresis Deadband ป้องกันอาการสั่น/โยกซ้ายขวา)
+        is_rot_settled = False         # สถานะหยุดนิ่งสนิทตามองศาหมุนข้อมือ
 
         # ตัวแปรจับเวลาสำหรับ print force ตลอดเวลา (5 Hz)
         last_force_print = 0.0
@@ -761,6 +763,8 @@ if __name__ == "__main__":
                 with vr_vel_lock:
                     vr_pose_state["target_pose"] = None
                     vr_vel = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                is_pose_settled = False
+                is_rot_settled = False
                 move_to_safe_home(rtde_c, rtde_r)
                 time.sleep(0.3)
                 current_pose = rtde_r.getActualTCPPose()
@@ -963,77 +967,68 @@ if __name__ == "__main__":
                 # 1. ระยะห่างเชิงเส้น (Position Error Magnitude)
                 pos_dist = math.sqrt(pos_err[0]**2 + pos_err[1]**2 + pos_err[2]**2)
 
-                # กำหนด Deadband และ Smooth Transition Zone เพื่อแก้ปัญหา Hunting Oscillation (แกว่งไปมา)
-                # Deadband ขั้นต่ำ: 0.8 mm (นิ่งสนิท ไร้กระตุก)
-                # S-curve transition: 0.8 mm -> 2.5 mm ค่อยๆ เชื่อมต่อความเร็วอย่างต่อเนื่อง ไร้แรงกระชาก
-                pos_deadband_min = 0.0008
-                pos_deadband_max = 0.0025
+                # กำหนด Deadband พร้อม Hysteresis และ Smooth S-curve transition
+                # เพื่อกำจัดปัญหา Hunting Oscillation (แรงโยกซ้ายขวาตอนหยุด) 100%
+                # - เมื่อหุ่นเข้าใกล้เป้าหมายในระยะ 3.0 mm (หรือหมุนใกล้ < 0.80°): เข้าสู่สถานะ Settled (หยุดนิ่งสนิท)
+                # - Hysteresis: จะไม่เริ่มขยับใหม่จนกว่ามือจะตั้งใจขยับเกิน 5.0 mm (หรือบิดเกิน 1.80°)
+                #   ตัดปัญหา Tracking jitter ของ Meta Quest ไม่ให้กระตุ้นการขยับซ้ำไปซ้ำมา
+                if is_pose_settled:
+                    if pos_dist > 0.0050:
+                        is_pose_settled = False
+                else:
+                    if pos_dist <= 0.0030:
+                        is_pose_settled = True
 
-                if pos_dist <= pos_deadband_min:
+                if is_pose_settled:
                     v_p = [0.0, 0.0, 0.0]
                 else:
-                    blend = min(1.0, (pos_dist - pos_deadband_min) / (pos_deadband_max - pos_deadband_min))
+                    pos_deadband_min = 0.0030
+                    pos_deadband_max = 0.0100
+                    blend = min(1.0, max(0.0, (pos_dist - pos_deadband_min) / (pos_deadband_max - pos_deadband_min)))
                     blend_smooth = blend * blend * (3.0 - 2.0 * blend)
 
-                    # Kinematic Deceleration Bounding (เบรกทันก่อน Deadband ป้องกัน Overshoot และตัดแรงเฉื่อย):
-                    # v_stop = sqrt(2 * a_dec * d_eff)
-                    a_dec = max(0.85, cur_smooth_accel * 3.0)
+                    # Kinematic Deceleration Bounding (เบรกทันก่อน Deadband ป้องกัน Overshoot และตัดแรงเฉื่อย)
+                    a_dec = max(0.65, cur_smooth_accel * 2.5)
                     d_eff = max(0.0, pos_dist - pos_deadband_min)
                     v_stop_max = math.sqrt(2.0 * a_dec * d_eff)
 
-                    # Proportional Gain (4.5 ตอบสนองฉับไวทันที ไร้ Lag และไม่ลอยตัว)
-                    kp_pos = 4.5 * speed_level
+                    # Proportional Gain (4.0 ตอบสนองฉับไวทันที ไร้ Lag และไม่สวิง)
+                    kp_pos = 4.0 * speed_level
                     vr_speed_cap = max(cur_smooth_speed, VR_TRACKING_MAX_SPEED * min(speed_level, 1.8))
                     v_cmd_mag = min(pos_dist * kp_pos, v_stop_max, vr_speed_cap) * blend_smooth
 
                     dir_p = [pos_err[i] / pos_dist for i in range(3)]
                     v_p = [dir_p[i] * v_cmd_mag for i in range(3)]
 
-                    # D-term Damping: หน่วงความเร็วต้านการแกว่งเฉพาะช่วงเข้าใกล้เป้าหมาย (Settling Zone < 20 mm) เพื่อหยุดสนิท ไร้ Overshoot
-                    # เมื่อมือเคลื่อนไหวเร็วหรือกำลังกลับทิศทาง จะไม่หน่วงต้าน (ตัดความหนืดเหนียวออก ให้ตอบสนองติดมือทันที)
-                    if pos_dist < 0.020:
-                        try:
-                            actual_tcp_spd = rtde_r.getActualTCPSpeed()
-                            settle_factor = max(0.0, 1.0 - (pos_dist - pos_deadband_min) / 0.0192)
-                            kd_pos = 0.15 * settle_factor
-                            for i in range(3):
-                                v_p[i] -= kd_pos * actual_tcp_spd[i]
-                        except Exception:
-                            pass
-
-                # 2. ระยะห่างเชิงมุม (Rotation Error Magnitude)
+                # 2. ระยะห่างเชิงมุม (Rotation Error Magnitude พร้อม Hysteresis)
                 rot_dist = math.sqrt(rot_err[0]**2 + rot_err[1]**2 + rot_err[2]**2)
-                rot_deadband_min = math.radians(0.25)
-                rot_deadband_max = math.radians(0.80)
+                rot_deadband_min = math.radians(0.80)
+                rot_deadband_max = math.radians(2.50)
 
-                if rot_dist <= rot_deadband_min:
+                if is_rot_settled:
+                    if rot_dist > math.radians(1.80):
+                        is_rot_settled = False
+                else:
+                    if rot_dist <= rot_deadband_min:
+                        is_rot_settled = True
+
+                if is_rot_settled:
                     w_p = [0.0, 0.0, 0.0]
                 else:
-                    rot_blend = min(1.0, (rot_dist - rot_deadband_min) / (rot_deadband_max - rot_deadband_min))
+                    rot_blend = min(1.0, max(0.0, (rot_dist - rot_deadband_min) / (rot_deadband_max - rot_deadband_min)))
                     rot_blend_smooth = rot_blend * rot_blend * (3.0 - 2.0 * rot_blend)
 
-                    # Kinematic Angular Deceleration Bounding (หยุดทันทีเมื่อข้อมือหยุดหมุน)
-                    alpha_dec = max(2.0, cur_stream_accel * 3.5)
+                    # Kinematic Angular Deceleration Bounding (หยุดนิ่งสนิทเมื่อข้อมือหยุดหมุน)
+                    alpha_dec = max(1.8, cur_stream_accel * 3.0)
                     theta_eff = max(0.0, rot_dist - rot_deadband_min)
                     w_stop_max = math.sqrt(2.0 * alpha_dec * theta_eff)
 
-                    kp_rot = 3.6 * speed_level
+                    kp_rot = 3.2 * speed_level
                     vr_rot_cap = max(cur_rot_speed * 1.5, VR_TRACKING_MAX_ROT * min(speed_level, 1.8))
                     w_cmd_mag = min(rot_dist * kp_rot, w_stop_max, vr_rot_cap) * rot_blend_smooth
 
                     dir_r = [rot_err[i] / rot_dist for i in range(3)]
                     w_p = [dir_r[i] * w_cmd_mag for i in range(3)]
-
-                    # D-term Damping สำหรับมุมหมุนข้อมือเฉพาะช่วงเข้าใกล้เป้าหมาย (< 3.0°)
-                    if rot_dist < math.radians(3.0):
-                        try:
-                            actual_tcp_spd = rtde_r.getActualTCPSpeed()
-                            rot_settle = max(0.0, 1.0 - (rot_dist - rot_deadband_min) / (math.radians(3.0) - rot_deadband_min))
-                            kd_rot = 0.12 * rot_settle
-                            for i in range(3):
-                                w_p[i] -= kd_rot * actual_tcp_spd[3 + i]
-                        except Exception:
-                            pass
 
                 vx += v_p[0]
                 vy += v_p[1]
@@ -1174,15 +1169,18 @@ if __name__ == "__main__":
                 cur_v_mag = math.sqrt(cur_v[0]**2 + cur_v[1]**2 + cur_v[2]**2)
                 tgt_v_mag = math.sqrt(tgt_v[0]**2 + tgt_v[1]**2 + tgt_v[2]**2)
                 dot_v = cur_v[0]*tgt_v[0] + cur_v[1]*tgt_v[1] + cur_v[2]*tgt_v[2]
-                is_reversing = (cur_v_mag > 0.015 and tgt_v_mag > 0.015 and dot_v < 0.0)
+                is_reversing = (cur_v_mag > 0.020 and tgt_v_mag > 0.020 and dot_v < 0.0)
 
                 # อัตราเร่งเชิงเส้น (Linear Acceleration):
-                # - เมื่อกลับทิศทาง (is_reversing) หรือใกล้หยุด (is_settling): ใช้อัตราเร่งเบรก VR_BRAKE_ACCEL (1.15 m/s²) เพื่อหยุดและกลับตัวฉับไว ไร้แรงเฉื่อยค้าง
-                # - เมื่อติดตามมือปกติใน VR: ใช้ 0.90 m/s² เพื่อความฉับไวติดมือ ไม่หน่วง ไม่ล้าหลัง
+                # - เมื่อกลับทิศทางขณะกำลังเคลื่อนที่เร็ว (is_reversing): ใช้อัตราเร่งเบรก VR_BRAKE_ACCEL (1.15 m/s²) เพื่อกลับตัวฉับไว
+                # - เมื่อกำลังเข้าสู่จุดหมายปลายทาง (is_settling < 25 mm): ใช้อัตราเร่งลดลงอย่างนุ่มนวล (0.35 m/s²) เป็น Settling Cushion ป้องกันการดีดโยกซ้ายขวา
+                # - เมื่อติดตามมือปกติใน VR: ใช้ 0.90-1.15 m/s² เพื่อความฉับไวติดมือ ไม่หน่วง ไม่ล้าหลัง
                 # - เมื่อใช้คีย์บอร์ด WASD: ใช้ cur_smooth_accel (0.25 m/s²) นุ่มนวล
-                is_settling = is_pose_mode and (pos_dist < 0.020 or tgt_v_mag < 0.020)
-                if is_reversing or is_settling:
+                is_settling = is_pose_mode and (pos_dist < 0.025 or tgt_v_mag < 0.025)
+                if is_reversing and cur_v_mag > 0.03:
                     a_lin = VR_BRAKE_ACCEL
+                elif is_settling:
+                    a_lin = 0.35  # Settling Cushion นุ่มนวล ไร้แรงกระชาก/โยกซ้ายขวา
                 elif is_pose_mode:
                     a_lin = max(0.85, min(1.15, 0.65 * speed_level + 0.35))
                 else:
@@ -1202,7 +1200,11 @@ if __name__ == "__main__":
                 # 2. Ramping ความเร็วเชิงมุม (Angular S-curve limiter สำหรับ Wrist Wx, Wy, Wz)
                 diff_w = [tgt_w[i] - cur_w[i] for i in range(3)]
                 diff_w_mag = math.sqrt(diff_w[0]**2 + diff_w[1]**2 + diff_w[2]**2)
-                a_rot = 3.0 if is_pose_mode else cur_stream_accel * 2.5
+                is_settling_rot = is_pose_mode and (rot_dist < math.radians(3.0) or math.sqrt(tgt_w[0]**2 + tgt_w[1]**2 + tgt_w[2]**2) < 0.05)
+                if is_settling_rot:
+                    a_rot = 1.20  # rad/s² Settling cushion สำหรับการหมุนข้อมือ
+                else:
+                    a_rot = 3.0 if is_pose_mode else cur_stream_accel * 2.5
                 max_step_w = a_rot * dt_loop
 
                 if diff_w_mag <= max_step_w:
@@ -1226,13 +1228,14 @@ if __name__ == "__main__":
                 else:
                     current_cart_cmd = [0.0] * 6
                     if was_moving_arm:
-                        rtde_c.speedStop(STOP_ACCEL)
+                        # หยุดสนิทอย่างนุ่มนวลด้วยอัตราเร่ง 0.40 m/s² เพื่อป้องกันแรงกระแทกกลไกเกียร์ของ UR3e (Base joint wobble)
+                        rtde_c.speedStop(0.40)
                         was_moving_arm = False
 
             elif was_moving_arm:
                 current_stream_qd = [0.0] * 6
                 current_cart_cmd = [0.0] * 6
-                rtde_c.speedStop(STOP_ACCEL)
+                rtde_c.speedStop(0.40)
                 was_moving_arm = False
 
             # 7. อ่านค่า Force ทุกรอบ 50 Hz และกรองผ่าน Unscented Kalman Filter (UKF)
