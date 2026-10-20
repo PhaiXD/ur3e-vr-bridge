@@ -894,6 +894,10 @@ if __name__ == "__main__":
             cur_rot_speed = ROT_SPEED * speed_level
             cur_smooth_accel = min(1.0, SMOOTH_ACCEL * speed_level)
             cur_stream_accel = min(1.0, J_STREAM_ACCEL * speed_level)
+            vr_speed_cap = max(cur_smooth_speed, VR_TRACKING_MAX_SPEED * min(speed_level, 1.8))
+            vr_rot_cap = max(cur_rot_speed * 1.5, VR_TRACKING_MAX_ROT * min(speed_level, 1.8))
+            pos_dist = 0.0
+            rot_dist = 0.0
 
             vx = 0.0
             vy = 0.0
@@ -1057,7 +1061,7 @@ if __name__ == "__main__":
 
             # จำกัดความเร็วเชิงมุมรวม
             rot_mag = math.sqrt(wx*wx + wy*wy + wz*wz)
-            max_allowed_rot = vr_rot_cap if is_pose_mode else max_rot_limit
+            max_allowed_rot = vr_rot_cap if is_pose_mode else cur_rot_speed
             if rot_mag > max_allowed_rot:
                 scale_rot = max_allowed_rot / rot_mag
                 wx *= scale_rot
