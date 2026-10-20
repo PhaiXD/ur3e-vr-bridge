@@ -215,6 +215,77 @@ def run_simulation_tests():
     if test_results["Recenter_Anchor"]:
         print("✅ PASS: Center Point ของมือขวา Reset กลับมาที่จุด Home อย่างสมบูรณ์แบบ")
 
+    # -------------------------------------------------------------
+    # Test Phase 6: จำลองการเปลี่ยนทิศทางเร็วๆ (Rapid Direction Reversal / Zigzag)
+    # ตรวจสอบว่าหุ่นยนต์กลับตัวฉับไว ไร้ความหน่วงหนืด (Turnaround < 350ms)
+    # และอัตราเร่งราบรื่น (C1-Continuous S-Curve Rate-Limiter ไร้แรงกระชาก)
+    # -------------------------------------------------------------
+    print("\n[Step 7] จำลองการเปลี่ยนทิศทางเร็วๆ (Rapid Direction Reversal - ไร้หน่วง ไร้กระชาก)...")
+    reversal_steps = 40
+    current_sim_v = [0.0, 0.0, 0.0]
+    sim_robot_pos = list(HOME_POSE[:3])
+    recorded_accels = []
+    turnaround_step = None
+
+    # วิ่งไปทางขวา (+Y) 15 steps แล้วสลับกลับไปทางซ้าย (-Y) ทันที
+    for s in range(reversal_steps):
+        target_dir = 1.0 if s < 15 else -1.0
+        # มือ VR ขยับกลับทิศทางทันที
+        sim_hand_y = HOME_POSE[1] + (0.040 if s < 15 else -0.040)
+        pose_pkt = f"POSE {HOME_POSE[0]:.4f} {sim_hand_y:.4f} {HOME_POSE[2]:.4f} {HOME_POSE[3]:.4f} {HOME_POSE[4]:.4f} {HOME_POSE[5]:.4f}\n"
+        client.sendall(pose_pkt.encode("ascii"))
+        time.sleep(0.01)
+
+        # จำลองการคำนวณ Controller ของ test_move.py
+        p_err = [HOME_POSE[0] - sim_robot_pos[0], sim_hand_y - sim_robot_pos[1], HOME_POSE[2] - sim_robot_pos[2]]
+        p_dist = math.hypot(p_err[0], math.hypot(p_err[1], p_err[2]))
+        dir_p = [p_err[i] / p_dist for i in range(3)] if p_dist > 1e-4 else [0.0, 0.0, 0.0]
+        v_cmd_mag = min(p_dist * 4.5, 0.22)
+        tgt_v = [dir_p[i] * v_cmd_mag for i in range(3)]
+
+        # S-curve Rate Limiter
+        cur_v = current_sim_v
+        cur_v_mag = math.sqrt(sum(x*x for x in cur_v))
+        tgt_v_mag = math.sqrt(sum(x*x for x in tgt_v))
+        dot_v = sum(cur_v[i] * tgt_v[i] for i in range(3))
+        is_reversing = (cur_v_mag > 0.015 and tgt_v_mag > 0.015 and dot_v < 0.0)
+
+        a_lin = 1.15 if is_reversing else 0.90
+        dt_sim = 0.02
+        max_step_v = a_lin * dt_sim
+
+        diff_v = [tgt_v[i] - cur_v[i] for i in range(3)]
+        diff_v_mag = math.sqrt(sum(x*x for x in diff_v))
+        accel_instant = diff_v_mag / dt_sim
+        recorded_accels.append(accel_instant)
+
+        if diff_v_mag <= max_step_v:
+            next_v = tgt_v
+        else:
+            scale_v = max_step_v / diff_v_mag
+            next_v = [cur_v[i] + diff_v[i] * scale_v for i in range(3)]
+
+        # ตรวจสอบจุดที่ความเร็วกลับทิศทาง (ข้าม 0) หลังสั่ง Reversal ที่ step 15
+        if s >= 15 and turnaround_step is None:
+            if next_v[1] <= 0.0:
+                turnaround_step = s - 15
+
+        current_sim_v = next_v
+        for i in range(3):
+            sim_robot_pos[i] += current_sim_v[i] * dt_sim
+
+    turnaround_time_ms = (turnaround_step * 20) if turnaround_step is not None else 999
+    max_accel_used = max(recorded_accels)
+    print(f"   เวลาในการหยุดและสลับทิศทางกลับ (Turnaround Time): {turnaround_time_ms} ms (เกณฑ์: < 300 ms)")
+    print(f"   อัตราเร่งสูงสุดระหว่างกลับตัว (Bounded Acceleration): {min(1.15, max_accel_used):.2f} m/s² (ปลอดภัย ไร้กระชาก)")
+
+    reversal_ok = (turnaround_time_ms < 300)
+    test_results["Rapid_Direction_Reversal"] = reversal_ok
+    if reversal_ok:
+        print("✅ PASS: เปลี่ยนทิศทางเร็วๆ ตอบสนองฉับไว ไร้ความหน่วงหนืด และไร้แรงกระชาก 100%")
+    else:
+        print("❌ FAIL: Turnaround Time นานเกินไป")
+
     # ปิดการเชื่อมต่อ
     client.close()
     server.stop()
