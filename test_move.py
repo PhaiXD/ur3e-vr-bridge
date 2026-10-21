@@ -40,7 +40,7 @@ J_ACCEL = 1.00              # rad/s² สำหรับ moveJ ตอนกล�
 
 # อัตราเร็วและอัตราเร่งเฉพาะสำหรับ VR Hand Tracking (กำจัดแรงเฉื่อยและแรงเหวี่ยง 100%)
 VR_TRACKING_MAX_SPEED = 0.20    # m/s (200 mm/s) เพดานความเร็วติดตามมือ VR (ลดโมเมนตัมและแรงเหวี่ยง)
-VR_TRACKING_MAX_ROT = 1.60      # rad/s (~92°/s) เพดานความเร็วหมุนข้อมือตาม VR Hand (ไร้แรงเหวี่ยงข้อมือ)
+VR_TRACKING_MAX_ROT = 3.80      # rad/s (~218°/s) หมุนเร็ว คล่องตัว ฉับไว เพดานความเร็วหมุนข้อมือตาม VR Hand (ไร้แรงเหวี่ยงข้อมือ)
 VR_BRAKE_ACCEL = 1.50           # m/s² อัตราเร่งเบรกชะลอหยุดฉับไว ตัดแรงเฉื่อย (Inertia) ให้หยุดสนิททันทีเมื่อมือหยุด
 
 
@@ -725,6 +725,8 @@ if __name__ == "__main__":
             # 1. ตรวจสอบ Protective Stop ก่อน
             if check_protective_stop(rtde_r):
                 print("\n🛑 ตรวจพบ PROTECTIVE STOP!")
+                if 'vr_server' in locals() and vr_server:
+                    vr_server.send_alert("ERROR", "UR3e Protective Stop Detected!")
                 if was_moving_arm:
                     try:
                         rtde_c.speedStop(STOP_ACCEL)
@@ -1017,12 +1019,12 @@ if __name__ == "__main__":
                 if is_rot_settled:
                     w_p = [0.0, 0.0, 0.0]
                 else:
-                    # Critical Angular Damping (ตัดแรงเหวี่ยงข้อมือ ไร้แรงบิดสะบัด)
-                    kp_rot = 3.8 * speed_level
-                    vr_rot_cap = max(cur_rot_speed * 1.2, VR_TRACKING_MAX_ROT * min(speed_level, 1.4))
+                    # Fast & Snappy Angular Control (เร็ว ฉับพลัน คล่องแคล่ว ไร้ความหน่วงหนืด)
+                    kp_rot = 5.5 * speed_level
+                    vr_rot_cap = max(cur_rot_speed * 1.5, VR_TRACKING_MAX_ROT * min(speed_level, 1.8))
                     w_desired = min(rot_dist * kp_rot, vr_rot_cap)
 
-                    kd_rot = 0.90
+                    kd_rot = 0.15
                     dir_r = [rot_err[i] / rot_dist for i in range(3)]
                     w_p = [dir_r[i] * w_desired - kd_rot * [act_wx, act_wy, act_wz][i] for i in range(3)]
 
@@ -1170,9 +1172,9 @@ if __name__ == "__main__":
                 is_braking_v = (tgt_v_mag < cur_v_mag) or (dot_v <= 0.0)
 
                 if is_braking_v:
-                    a_lin = 1.50  # m/s² เบรกนุ่มนวล มั่นคง ไร้แรงกระชาก ไร้แรงเหวี่ยงสะสม
+                    a_lin = 2.50  # m/s² เบรกเร็ว มั่นคง ไร้แรงเฉื่อยสะสม
                 elif is_pose_mode:
-                    a_lin = max(0.80, min(1.20, 0.70 * speed_level + 0.30))
+                    a_lin = max(1.50, min(2.50, 1.20 * speed_level + 0.60))
                 else:
                     a_lin = cur_smooth_accel
 
@@ -1196,11 +1198,11 @@ if __name__ == "__main__":
                 is_braking_w = (tgt_w_mag < cur_w_mag) or (dot_w <= 0.0)
 
                 if is_braking_w:
-                    a_rot = 12.0  # rad/s² เบรกข้อมือนุ่มนวล ป้องกัน Wrist Torque Spike และแรงเหวี่ยง
+                    a_rot = 35.0  # rad/s² หยุดหมุนฉับไว ไร้หน่วง
                 elif is_pose_mode:
-                    a_rot = 8.0 * speed_level
+                    a_rot = 28.0 * speed_level  # หมุนตามมือฉับพลัน คล่องตัวสูง
                 else:
-                    a_rot = cur_stream_accel * 4.0
+                    a_rot = cur_stream_accel * 5.0
 
                 diff_w = [tgt_w[i] - cur_w[i] for i in range(3)]
                 diff_w_mag = math.sqrt(diff_w[0]**2 + diff_w[1]**2 + diff_w[2]**2)
@@ -1222,12 +1224,18 @@ if __name__ == "__main__":
                     # ด่านตรวจความปลอดภัยเด็ดขาดก่อนส่ง speedL: สเกลความเร็วไม่ให้ข้อต่อใดเกินเพดาน JOINT_MAX_SPEEDS เด็ดขาด
                     J_check, _ = compute_ur3e_jacobian(current_q)
                     qd_check = solve_dls_system(J_check, current_cart_cmd, damping=0.025)
-                    final_viol_scales = [JOINT_MAX_SPEEDS[j] / abs(qd_check[j]) for j in range(6) if abs(qd_check[j]) > JOINT_MAX_SPEEDS[j]]
-                    if final_viol_scales:
-                        min_final_s = min(final_viol_scales)
-                        current_cart_cmd = [c * min_final_s for c in current_cart_cmd]
+                    arm_viol_scales = [JOINT_MAX_SPEEDS[j] / abs(qd_check[j]) for j in range(3) if abs(qd_check[j]) > JOINT_MAX_SPEEDS[j]]
+                    wrist_viol_scales = [JOINT_MAX_SPEEDS[j] / abs(qd_check[j]) for j in range(3, 6) if abs(qd_check[j]) > JOINT_MAX_SPEEDS[j]]
+                    if arm_viol_scales:
+                        min_arm_s = min(arm_viol_scales)
+                        current_cart_cmd = [c * min_arm_s for c in current_cart_cmd]
+                    elif wrist_viol_scales:
+                        min_wrist_s = min(wrist_viol_scales)
+                        current_cart_cmd[3] *= min_wrist_s
+                        current_cart_cmd[4] *= min_wrist_s
+                        current_cart_cmd[5] *= min_wrist_s
 
-                    exec_accel = 1.50 if is_pose_mode else cur_smooth_accel
+                    exec_accel = 2.40 if is_pose_mode else cur_smooth_accel
                     rtde_c.speedL(current_cart_cmd, exec_accel, STREAM_TIME_BUFFER)
                     was_moving_arm = True
                 else:
@@ -1265,6 +1273,8 @@ if __name__ == "__main__":
             safety_prox = compute_safety_proximity(current_pose, current_q, qd_for_safety)
             if 'vr_server' in locals() and vr_server:
                 vr_server.send_feedback(cached_gripper_pos, smooth_grip_force, speed_pct, actual_tcp_pose=current_pose, safety_proximity=safety_prox)
+                if 'safety_reason' in locals() and safety_reason != "OK":
+                    vr_server.send_alert("WARNING", safety_reason)
 
             current_time = time.time()
             if current_time - last_force_print >= FORCE_PRINT_INTERVAL:

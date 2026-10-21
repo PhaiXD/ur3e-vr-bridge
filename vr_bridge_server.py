@@ -93,6 +93,27 @@ class VRBridgeServer:
         except Exception:
             pass
 
+    def send_alert(self, level, message):
+        """
+        ส่งข้อความแจ้งเตือนหรือ Error (ALERT WARNING/ERROR <msg>) ไปยัง Unity แบบ UTF-8
+        """
+        if not self.client_sock:
+            return
+        try:
+            clean_msg = str(message).replace("\n", " ").strip()
+            now = time.time()
+            if not hasattr(self, "_last_alert_msg"):
+                self._last_alert_msg = ""
+                self._last_alert_time = 0.0
+            if clean_msg == self._last_alert_msg and (now - self._last_alert_time) < 1.5:
+                return
+            self._last_alert_msg = clean_msg
+            self._last_alert_time = now
+            msg = f"ALERT {level} {clean_msg}\n"
+            self.client_sock.sendall(msg.encode("utf-8"))
+        except Exception:
+            pass
+
     def _server_loop(self):
         try:
             self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

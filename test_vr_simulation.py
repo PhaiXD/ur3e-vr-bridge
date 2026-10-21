@@ -286,6 +286,26 @@ def run_simulation_tests():
     else:
         print("❌ FAIL: Turnaround Time นานเกินไป")
 
+    # -------------------------------------------------------------
+    # ขั้นที่ 8: ทดสอบการส่งคำเตือนฉุกเฉินและ Safety Alert (send_alert)
+    # -------------------------------------------------------------
+    print("\n[ขั้นที่ 8] ทดสอบระบบแจ้งเตือนฉุกเฉินและข้อผิดพลาด (ALERT Warning / Error Broadcast)")
+    server.send_alert("WARNING", "Reach near outer safety boundary (0.70m)")
+    time.sleep(0.05)
+    server.send_alert("ERROR", "Protective Stop Triggered!")
+    time.sleep(0.05)
+
+    alert_data = client.recv(1024).decode("utf-8", errors="ignore")
+    has_warning = "ALERT WARNING Reach near outer safety boundary" in alert_data
+    has_error = "ALERT ERROR Protective Stop Triggered!" in alert_data
+    alerts_ok = has_warning and has_error
+
+    test_results["Safety_Alert_Broadcast"] = alerts_ok
+    if alerts_ok:
+        print("✅ PASS: ส่งข้อความแจ้งเตือน WARNING และ ERROR ถึง Client สำเร็จ 100%")
+    else:
+        print(f"❌ FAIL: ไม่ได้รับข้อความแจ้งเตือนที่ถูกต้อง (Received: {alert_data})")
+
     # ปิดการเชื่อมต่อ
     client.close()
     server.stop()
