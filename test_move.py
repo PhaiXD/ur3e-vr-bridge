@@ -1210,6 +1210,9 @@ if __name__ == "__main__":
                     a_rot = 14.0 * speed_level
                 else:
                     a_rot = cur_stream_accel * 4.0
+
+                diff_w = [tgt_w[i] - cur_w[i] for i in range(3)]
+                diff_w_mag = math.sqrt(diff_w[0]**2 + diff_w[1]**2 + diff_w[2]**2)
                 max_step_w = a_rot * dt_loop
 
                 if diff_w_mag <= max_step_w:
