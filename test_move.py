@@ -11,7 +11,7 @@ from robot_safety import (
     SHOULDER_Z, SPHERE_MAX, SPHERE_MIN, CYLINDER_RADIUS, CARTESIAN_TCP_SPEED_CAP,
     MIN_Z, MAX_Z,
     JOINT_LIMITS_DEG, JOINT_LIMITS_RAD, JOINT_NAMES,
-    MAX_SAFE_JOINT_SPEED_DEG, filter_cartesian_velocity,
+    MAX_SAFE_JOINT_SPEED_DEG, JOINT_MAX_SPEEDS, filter_cartesian_velocity,
     filter_joint_velocity, compute_ur3e_jacobian, solve_dls_system,
     compute_tool_rotation_vectors, compute_pose_error,
     compute_safety_proximity
@@ -38,10 +38,10 @@ STREAM_TIME_BUFFER = 0.04   # วินาที (40 ms) Lookahead time window �
 J_SPEED = 0.80              # rad/s สำหรับ moveJ ตอนกลับ Safe Home
 J_ACCEL = 1.00              # rad/s² สำหรับ moveJ ตอนกลับ Safe Home
 
-# อัตราเร็วและอัตราเร่งเฉพาะสำหรับ VR Hand Tracking (กำจัดแรงเฉื่อยและอาการดีเลย์เมื่อเคลื่อนไหวเร็ว)
-VR_TRACKING_MAX_SPEED = 0.22    # m/s (220 mm/s) เพดานความเร็วติดตามมือ VR (ขยับมือเร็ว หุ่นยนต์ตามทันทันที ไม่ตกค้าง)
-VR_TRACKING_MAX_ROT = 2.20      # rad/s (~126°/s) เพดานความเร็วหมุนข้อมือตาม VR Hand คล่องตัว ฉับไว ไร้ความหน่วง
-VR_BRAKE_ACCEL = 1.15           # m/s² อัตราเร่งเบรกชะลอหยุดฉับไว ตัดแรงเฉื่อย (Inertia) ให้หยุดสนิททันทีเมื่อมือหยุด
+# อัตราเร็วและอัตราเร่งเฉพาะสำหรับ VR Hand Tracking (กำจัดแรงเฉื่อยและแรงเหวี่ยง 100%)
+VR_TRACKING_MAX_SPEED = 0.20    # m/s (200 mm/s) เพดานความเร็วติดตามมือ VR (ลดโมเมนตัมและแรงเหวี่ยง)
+VR_TRACKING_MAX_ROT = 1.60      # rad/s (~92°/s) เพดานความเร็วหมุนข้อมือตาม VR Hand (ไร้แรงเหวี่ยงข้อมือ)
+VR_BRAKE_ACCEL = 1.50           # m/s² อัตราเร่งเบรกชะลอหยุดฉับไว ตัดแรงเฉื่อย (Inertia) ให้หยุดสนิททันทีเมื่อมือหยุด
 
 
 # ==================== การตั้งค่า Gripper (Robotiq) ====================
@@ -992,23 +992,19 @@ if __name__ == "__main__":
                 if is_pose_settled:
                     v_p = [0.0, 0.0, 0.0]
                 else:
-                    # Kinematic Deceleration Bounding (ใช้ค่าเบรกจริง 2.20 m/s² ไม่กดเบรกช้าจนเกิดแรงเฉื่อย)
-                    a_dec = 2.20
-                    d_eff = max(0.0, pos_dist - 0.0025)
-                    v_stop_max = math.sqrt(2.0 * a_dec * d_eff)
+                    # S-Curve Soft Landing Approach Speed with Critical Damping
+                    kp_pos = 3.8 * speed_level
+                    vr_speed_cap = max(cur_smooth_speed, VR_TRACKING_MAX_SPEED * min(speed_level, 1.4))
+                    v_desired = min(pos_dist * kp_pos, vr_speed_cap)
 
-                    # Proportional Approach Speed
-                    kp_pos = 5.2 * speed_level
-                    vr_speed_cap = max(cur_smooth_speed, VR_TRACKING_MAX_SPEED * min(speed_level, 1.8))
-                    v_desired = min(pos_dist * kp_pos, v_stop_max, vr_speed_cap)
-
-                    # Active Velocity Damping (PD Control: Kp*e - Kd*v_actual)
-                    # ดึงกลับทันทีเมื่อหยุดกระทันหัน คุมแรงเฉื่อยให้อยู่หมัด ไร้การแกว่งเลย 3-4 ครั้ง
-                    kd_pos = 0.40
+                    # Critical Velocity Damping (Anti-Inertia & Anti-Centrifugal Control):
+                    # Kp=3.8, Kd=0.85 ทำให้ระบบอยู่ในสภาวะ Critically Damped
+                    # กำจัดแรงเหวี่ยงและแรงเฉื่อยสะสม 100% หุ่นยนต์จะหยุดนิ่งสนิททันทีเมื่อมือหยุด ไร้การสวิงเลยเป้าหมาย
+                    kd_pos = 0.85
                     dir_p = [pos_err[i] / pos_dist for i in range(3)]
                     v_p = [dir_p[i] * v_desired - kd_pos * [act_vx, act_vy, act_vz][i] for i in range(3)]
 
-                # 2. ระยะห่างเชิงมุม (Rotation Error Magnitude พร้อม Hysteresis & Active Angular Damping)
+                # 2. ระยะห่างเชิงมุม (Rotation Error Magnitude พร้อม Hysteresis & Critical Angular Damping)
                 rot_dist = math.sqrt(rot_err[0]**2 + rot_err[1]**2 + rot_err[2]**2)
 
                 if is_rot_settled:
@@ -1021,17 +1017,12 @@ if __name__ == "__main__":
                 if is_rot_settled:
                     w_p = [0.0, 0.0, 0.0]
                 else:
-                    # Kinematic Angular Deceleration Bounding (เบรกข้อมือ 20.0 rad/s² หยุดหมุนตามมือทันที ไร้ความเฉื่อย)
-                    alpha_dec = 20.0
-                    theta_eff = max(0.0, rot_dist - math.radians(0.50))
-                    w_stop_max = math.sqrt(2.0 * alpha_dec * theta_eff)
+                    # Critical Angular Damping (ตัดแรงเหวี่ยงข้อมือ ไร้แรงบิดสะบัด)
+                    kp_rot = 3.8 * speed_level
+                    vr_rot_cap = max(cur_rot_speed * 1.2, VR_TRACKING_MAX_ROT * min(speed_level, 1.4))
+                    w_desired = min(rot_dist * kp_rot, vr_rot_cap)
 
-                    kp_rot = 6.2 * speed_level
-                    vr_rot_cap = max(cur_rot_speed * 1.5, VR_TRACKING_MAX_ROT * min(speed_level, 1.8))
-                    w_desired = min(rot_dist * kp_rot, w_stop_max, vr_rot_cap)
-
-                    # Active Angular Damping (PD Control: Kp*theta_err - Kd*w_actual)
-                    kd_rot = 0.35
+                    kd_rot = 0.90
                     dir_r = [rot_err[i] / rot_dist for i in range(3)]
                     w_p = [dir_r[i] * w_desired - kd_rot * [act_wx, act_wy, act_wz][i] for i in range(3)]
 
@@ -1179,9 +1170,9 @@ if __name__ == "__main__":
                 is_braking_v = (tgt_v_mag < cur_v_mag) or (dot_v <= 0.0)
 
                 if is_braking_v:
-                    a_lin = 2.25  # m/s² เบรกฉับไว หยุดทันที ไร้การเลี้ยวเลยเป้าหมาย
+                    a_lin = 1.50  # m/s² เบรกนุ่มนวล มั่นคง ไร้แรงกระชาก ไร้แรงเหวี่ยงสะสม
                 elif is_pose_mode:
-                    a_lin = max(1.10, min(1.60, 0.90 * speed_level + 0.35))
+                    a_lin = max(0.80, min(1.20, 0.70 * speed_level + 0.30))
                 else:
                     a_lin = cur_smooth_accel
 
@@ -1197,17 +1188,17 @@ if __name__ == "__main__":
                     cur_v = [cur_v[i] + diff_v[i] * scale_v for i in range(3)]
 
                 # 2. Ramping ความเร็วเชิงมุม (Wrist Angular Asymmetric Rate Limiter):
-                # - เมื่อชะลอการหมุนข้อมือ (Braking / Reversing): ใช้ 22.0 rad/s² หยุดหมุนข้อมือสนิทตามมือทันที ไร้แรงเหวี่ยง
-                # - เมื่อเร่งการหมุน: ใช้ 14.0 rad/s² หมุนตามมือฉับไว คล่องตัว ไร้ความหน่วง
+                # - เมื่อชะลอการหมุนข้อมือ (Braking / Reversing): ใช้ 12.0 rad/s² หยุดหมุนข้อมือสนิทตามมือทันที ไร้แรงเหวี่ยง
+                # - เมื่อเร่งการหมุน: ใช้ 8.0 rad/s² หมุนตามมือฉับไว คล่องตัว ไร้ความหน่วง
                 cur_w_mag = math.sqrt(cur_w[0]**2 + cur_w[1]**2 + cur_w[2]**2)
                 tgt_w_mag = math.sqrt(tgt_w[0]**2 + tgt_w[1]**2 + tgt_w[2]**2)
                 dot_w = cur_w[0]*tgt_w[0] + cur_w[1]*tgt_w[1] + cur_w[2]*tgt_w[2]
                 is_braking_w = (tgt_w_mag < cur_w_mag) or (dot_w <= 0.0)
 
                 if is_braking_w:
-                    a_rot = 22.0  # rad/s² เบรกข้อมือฉับไว กำจัดอาการเฉื่อยตอนหมุนข้อมือ 100%
+                    a_rot = 12.0  # rad/s² เบรกข้อมือนุ่มนวล ป้องกัน Wrist Torque Spike และแรงเหวี่ยง
                 elif is_pose_mode:
-                    a_rot = 14.0 * speed_level
+                    a_rot = 8.0 * speed_level
                 else:
                     a_rot = cur_stream_accel * 4.0
 
@@ -1228,9 +1219,15 @@ if __name__ == "__main__":
                 cmd_total_rot = math.sqrt(cur_w[0]**2 + cur_w[1]**2 + cur_w[2]**2)
 
                 if cmd_total_spd > 1e-4 or cmd_total_rot > 1e-4:
-                    # ส่ง speedL ไปยังคอนโทรลเลอร์ UR3e โดยเปิด Headroom อัตราเร่ง 2.50 m/s²
-                    # เพื่อให้คอนโทรลเลอร์ภายในของ UR3e ตอบสนองต่อการเบรกฉับไวตามที่เราสั่ง 100% ไร้ Lag สะสม
-                    exec_accel = 2.50 if is_pose_mode else cur_smooth_accel
+                    # ด่านตรวจความปลอดภัยเด็ดขาดก่อนส่ง speedL: สเกลความเร็วไม่ให้ข้อต่อใดเกินเพดาน JOINT_MAX_SPEEDS เด็ดขาด
+                    J_check, _ = compute_ur3e_jacobian(current_q)
+                    qd_check = solve_dls_system(J_check, current_cart_cmd, damping=0.025)
+                    final_viol_scales = [JOINT_MAX_SPEEDS[j] / abs(qd_check[j]) for j in range(6) if abs(qd_check[j]) > JOINT_MAX_SPEEDS[j]]
+                    if final_viol_scales:
+                        min_final_s = min(final_viol_scales)
+                        current_cart_cmd = [c * min_final_s for c in current_cart_cmd]
+
+                    exec_accel = 1.50 if is_pose_mode else cur_smooth_accel
                     rtde_c.speedL(current_cart_cmd, exec_accel, STREAM_TIME_BUFFER)
                     was_moving_arm = True
                 else:

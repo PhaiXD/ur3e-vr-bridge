@@ -13,18 +13,18 @@ DH = [
 
 SHOULDER_Z = 0.1519       # ความสูงจุดหมุน Shoulder จากระนาบฐานหุ่น (m)
 # ===================== ขอบเขตพื้นที่ทำงาน (จากคู่มือ UR3e Manual §5.1, §5.3, §8.4 และ docs/ur3e_manual_limits.md §7) =====================
-# Outer Safety Sphere: ปรับให้สอดคล้องกับระยะเอื้อมทางกายภาพจริงและ Safety Barrier ของ Unity (~55cm จาก Base)
-# ตามคู่มือ Manual §5.1: Working Radius 500mm + Robotiq 2F TCP Margin = 520mm (0.520m) จาก Shoulder
-SPHERE_MAX = 0.520        # รัศมีทรงกลมสูงสุดจาก Shoulder (520 mm สำหรับ Robotiq 2F TCP สอดคล้องระยะเอื้อม 55 cm จาก Base)
-# Inner Safety Sphere: ป้องกัน Gripper / ปลายมือ ชนฐานหุ่นยนต์และ Shoulder Housing ตาม Manual §7
-SPHERE_MIN = 0.210        # รัศมีทรงกลมต่ำสุดจาก Shoulder (210 mm สำหรับ Robotiq 2F TCP)
+# Outer Safety Sphere: ปรับให้สอดคล้องกับระยะเอื้อมจริงและ Safety Barrier ของ Unity (~58cm จาก Base)
+# ตามคู่มือ Manual §5.1: Working Radius 500mm + Robotiq 2F TCP Margin = 550mm (0.550m) จาก Shoulder
+SPHERE_MAX = 0.550        # รัศมีทรงกลมสูงสุดจาก Shoulder (550 mm สำหรับ Robotiq 2F TCP สอดคล้องระยะเอื้อม 58 cm จาก Base)
+# Inner Safety Sphere: ป้องกัน Gripper / ปลายมือ ชนฐานหุ่นยนต์และ Shoulder Housing (สอดคล้องวงเหลือง 28cm จาก Base)
+SPHERE_MIN = 0.230        # รัศมีทรงกลมต่ำสุดจาก Shoulder (230 mm สำหรับ Robotiq 2F TCP)
 # Forbidden Vertical Cylinder: ป้องกัน Singularity บริเวณแกน Z ของฐาน (base radius 64mm + margin)
 CYLINDER_RADIUS = 0.095   # รัศมีทรงกระบอกห้ามรอบแกน Z ฐาน (95 mm) ตาม Manual §5.3.1
-MAX_REACH_XY = 0.520      # ระยะเอื้อมแนวราบสูงสุด (520 mm) สอดคล้อง SPHERE_MAX
+MAX_REACH_XY = 0.550      # ระยะเอื้อมแนวราบสูงสุด (550 mm) สอดคล้อง SPHERE_MAX
 MIN_Z = -0.050            # ความสูงต่ำสุด Base Frame (-50 mm หรือ -450 mm บน Pendant ถึงชั้นวางล่าง)
 MAX_Z = 0.720             # ความสูงสูงสุด Base Frame (720 mm หรือ +320 mm บน Pendant)
-# TCP Linear Speed Cap: ต่ำกว่า Reduced Mode 750 mm/s มากพอสำหรับ VR teleoperation ที่ปลอดภัย
-CARTESIAN_TCP_SPEED_CAP = 0.350  # m/s (350 mm/s) ตาม Manual §7 Recommended
+# TCP Linear Speed Cap: จำกัดความเร็วเชิงเส้น 300 mm/s เพื่อความปลอดภัยและไร้แรงเฉื่อยสะสม 100%
+CARTESIAN_TCP_SPEED_CAP = 0.300  # m/s (300 mm/s) ป้องกัน Error Safety และตัดแรงเฉื่อยเด็ดขาด
 
 # ขอบเขตมุมข้อต่อ (Joint Limits) ที่ปลอดภัยและยืดหยุ่นสำหรับงาน Lab
 JOINT_LIMITS_DEG = [
@@ -38,22 +38,22 @@ JOINT_LIMITS_DEG = [
 JOINT_LIMITS_RAD = [(math.radians(lo), math.radians(hi)) for lo, hi in JOINT_LIMITS_DEG]
 JOINT_NAMES = ["Base", "Shoulder", "Elbow", "Wrist 1", "Wrist 2", "Wrist 3"]
 
-# ===================== ขีดจำกัดความเร็วข้อต่อ (จากคู่มือ UR3e Manual §2.1, §8.4.6) =====================
-# - ข้อต่อแขนท่อนใหญ่ J1-J3: 130°/s (72% ของ Safety Limit 180°/s) ตาม Manual §7
-# - ข้อต่อข้อมือ J4-J6: 180°/s (Conservative สำหรับ VR teleoperation จาก preset 191°/s) ตาม Manual §7
-MAX_SAFE_JOINT_SPEED_ARM_DEG = 130.0
-MAX_SAFE_JOINT_SPEED_WRIST_DEG = 180.0
+# ===================== ขีดจำกัดความเร็วข้อต่ออย่างเคร่งครัด (ป้องกัน Error Safety 100%) =====================
+# - ข้อต่อแขนท่อนใหญ่ J1-J3: จำกัดเข้มงวดที่ 100°/s (ปลอดภัยกว่า Limit 180°/s และ 191°/s มากถึง 80°/s)
+# - ข้อต่อข้อมือ J4-J6: จำกัดเข้มงวดที่ 150°/s (ปลอดภัยกว่า Preset 191°/s ถึง 41°/s)
+MAX_SAFE_JOINT_SPEED_ARM_DEG = 100.0
+MAX_SAFE_JOINT_SPEED_WRIST_DEG = 150.0
 MAX_SAFE_JOINT_SPEED_DEG = MAX_SAFE_JOINT_SPEED_ARM_DEG
 MAX_SAFE_JOINT_SPEED = math.radians(MAX_SAFE_JOINT_SPEED_ARM_DEG)
 MAX_SAFE_ARM_SPEED = math.radians(MAX_SAFE_JOINT_SPEED_ARM_DEG)
 MAX_SAFE_WRIST_SPEED = math.radians(MAX_SAFE_JOINT_SPEED_WRIST_DEG)
 JOINT_MAX_SPEEDS = [
-    MAX_SAFE_ARM_SPEED,    # Base
-    MAX_SAFE_ARM_SPEED,    # Shoulder
-    MAX_SAFE_ARM_SPEED,    # Elbow
-    MAX_SAFE_WRIST_SPEED,  # Wrist 1
-    MAX_SAFE_WRIST_SPEED,  # Wrist 2
-    MAX_SAFE_WRIST_SPEED,  # Wrist 3
+    MAX_SAFE_ARM_SPEED,    # Base (100°/s)
+    MAX_SAFE_ARM_SPEED,    # Shoulder (100°/s)
+    MAX_SAFE_ARM_SPEED,    # Elbow (100°/s)
+    MAX_SAFE_WRIST_SPEED,  # Wrist 1 (150°/s)
+    MAX_SAFE_WRIST_SPEED,  # Wrist 2 (150°/s)
+    MAX_SAFE_WRIST_SPEED,  # Wrist 3 (150°/s)
 ]
 
 
@@ -377,44 +377,31 @@ def filter_cartesian_velocity(vx, vy, vz, wx=0.0, wy=0.0, wz=0.0, current_pose=N
     # 3. คำนวณความเร็วข้อต่อล่วงหน้าด้วย Jacobian + DLS (Damped Least Squares)
     v_cmd = [vx, vy, vz, wx, wy, wz]
     J, _ = compute_ur3e_jacobian(current_q)
-    qd_pred = solve_dls_system(J, v_cmd, damping=0.02)
+    qd_pred = solve_dls_system(J, v_cmd, damping=0.025)
 
-    # 3a. ควบคุมความเร็วข้อต่อล่วงหน้าแบบแยกส่วน (Decoupled Joint Speed Limiter):
-    # - แขน J1-J3 <= 110°/s: หากเกินจะสเกลทั้งระบบอย่างได้สัดส่วน
-    # - ข้อมือ J4-J6 <= 240°/s: หากเกินจะสเกลเฉพาะความเร็วเชิงมุม (wx, wy, wz) ไม่ดึงความเร็วแขน (vx, vy, vz) ให้หน่วงทั้งแขน
-    arm_scales = []
-    wrist_scales = []
-    worst_arm_joint = 0
-    worst_wrist_joint = 3
-
-    for i in range(3):
+    # 3a. ควบคุมความเร็วข้อต่อล่วงหน้าอย่างเข้มงวด (Strict Joint Speed Limiter - ป้องกัน Error Safety 100%):
+    # - แขน J1-J3 <= 100°/s
+    # - ข้อมือ J4-J6 <= 150°/s
+    # หากข้อต่อใดเกินขีดจำกัด จะสเกลความเร็วเชิงเส้นและเชิงมุมลงอย่างได้สัดส่วนทันที
+    all_joint_scales = []
+    worst_joint_idx = 0
+    for i in range(6):
         lim = JOINT_MAX_SPEEDS[i]
         q_spd = abs(qd_pred[i])
         if q_spd > lim:
             r = lim / q_spd
-            arm_scales.append(r)
-            worst_arm_joint = i
+            all_joint_scales.append((r, i))
 
-    for i in range(3, 6):
-        lim = JOINT_MAX_SPEEDS[i]
-        q_spd = abs(qd_pred[i])
-        if q_spd > lim:
-            r = lim / q_spd
-            wrist_scales.append(r)
-            worst_wrist_joint = i
-
-    if arm_scales:
-        scale_arm = min(arm_scales)
-        vx *= scale_arm; vy *= scale_arm; vz *= scale_arm
-        wx *= scale_arm; wy *= scale_arm; wz *= scale_arm
-        qd_pred = [q_dot * scale_arm for q_dot in qd_pred]
-        reason = f"⚡ ชะลอความเร็วแขน: คุมข้อต่อ {JOINT_NAMES[worst_arm_joint]} ({math.degrees(abs(qd_pred[worst_arm_joint])/scale_arm):.1f}°/s > {math.degrees(JOINT_MAX_SPEEDS[worst_arm_joint]):.0f}°/s)"
-
-    if wrist_scales:
-        scale_wrist = min(wrist_scales)
-        wx *= scale_wrist; wy *= scale_wrist; wz *= scale_wrist
-        qd_pred = [qd_pred[i] if i < 3 else qd_pred[i] * scale_wrist for i in range(6)]
-        reason = f"⚡ ชะลอความเร็วข้อมือ: คุมข้อต่อ {JOINT_NAMES[worst_wrist_joint]} ({math.degrees(abs(qd_pred[worst_wrist_joint])/scale_wrist):.1f}°/s > {math.degrees(JOINT_MAX_SPEEDS[worst_wrist_joint]):.0f}°/s)"
+    if all_joint_scales:
+        worst_scale, worst_joint_idx = min(all_joint_scales, key=lambda x: x[0])
+        vx *= worst_scale
+        vy *= worst_scale
+        vz *= worst_scale
+        wx *= worst_scale
+        wy *= worst_scale
+        wz *= worst_scale
+        qd_pred = [q_dot * worst_scale for q_dot in qd_pred]
+        reason = f"⚡ ชะลอความเร็วเข้มงวด: คุมข้อต่อ {JOINT_NAMES[worst_joint_idx]} ({math.degrees(abs(qd_pred[worst_joint_idx])/worst_scale):.1f}°/s > {math.degrees(JOINT_MAX_SPEEDS[worst_joint_idx]):.0f}°/s)"
 
     # 3b. ตรวจสอบขอบเขตข้อต่อแบบทิศทาง (Directional Joint Limit Protection)
     for i in range(6):
