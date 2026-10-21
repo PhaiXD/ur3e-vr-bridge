@@ -28,6 +28,7 @@ def run_simulation_tests():
 
     test_results = {}
     received_home = False
+    received_shake = False
     latest_pose_cmd = None
     server_feedback = []
 
@@ -45,7 +46,12 @@ def run_simulation_tests():
     def on_home():
         nonlocal received_home
         received_home = True
-        print("   [Server Callback] 🏠 ได้รับคำสั่ง HOME จากการจีบมือซ้าย 3 วินาที!")
+        print("   [Server Callback] 🏠 ได้รับคำสั่ง HOME จากการจีบมือซ้าย 3 วินาที หรือกดปุ่ม [X] บนรีโมทซ้าย!")
+
+    def on_shake():
+        nonlocal received_shake
+        received_shake = True
+        print("   [Server Callback] 🧪 ได้รับคำสั่ง SHAKE จาก Left Thumbstick บนรีโมทซ้าย!")
 
     # เริ่ม VR Bridge Server จำลอง
     TEST_PORT = 5557  # ใช้พอร์ตทดสอบเพื่อไม่ชนกับพอร์ต 5555
@@ -54,7 +60,8 @@ def run_simulation_tests():
         on_grip_callback=on_grip,
         on_move_callback=on_move,
         on_pose_callback=on_pose,
-        on_home_callback=on_home
+        on_home_callback=on_home,
+        on_shake_callback=on_shake
     )
     server.start()
     time.sleep(0.3)
@@ -305,6 +312,19 @@ def run_simulation_tests():
         print("✅ PASS: ส่งข้อความแจ้งเตือน WARNING และ ERROR ถึง Client สำเร็จ 100%")
     else:
         print(f"❌ FAIL: ไม่ได้รับข้อความแจ้งเตือนที่ถูกต้อง (Received: {alert_data})")
+
+    # -------------------------------------------------------------
+    # ขั้นที่ 9: ทดสอบคำสั่ง SHAKE (เขย่าสารอัตโนมัติจาก Left Thumbstick)
+    # -------------------------------------------------------------
+    print("\n[ขั้นที่ 9] ทดสอบคำสั่ง SHAKE จาก Left Thumbstick (เขย่าสารอัตโนมัติ 3 รอบ)...")
+    client.sendall(b"SHAKE\n")
+    time.sleep(0.15)
+
+    test_results["Left_Thumbstick_SHAKE"] = received_shake
+    if received_shake:
+        print("✅ PASS: เซิร์ฟเวอร์ได้รับคำสั่ง SHAKE จากการกดก้านโยก Thumbstick ซ้าย สำเร็จ!")
+    else:
+        print("❌ FAIL: เซิร์ฟเวอร์ไม่ได้รับคำสั่ง SHAKE")
 
     # ปิดการเชื่อมต่อ
     client.close()
