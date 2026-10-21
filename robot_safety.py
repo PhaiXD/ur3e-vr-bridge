@@ -38,6 +38,10 @@ JOINT_LIMITS_DEG = [
 JOINT_LIMITS_RAD = [(math.radians(lo), math.radians(hi)) for lo, hi in JOINT_LIMITS_DEG]
 JOINT_NAMES = ["Base", "Shoulder", "Elbow", "Wrist 1", "Wrist 2", "Wrist 3"]
 
+# ขอบเขตเตือนและชะลอการหมุนก่อนถึงขีดจำกัดข้อต่อ (20-30 องศา ตามคู่มือ UR3e)
+JOINT_WARN_ZONE_DEG = 30.0
+JOINT_WARN_ZONE_RAD = math.radians(JOINT_WARN_ZONE_DEG)
+
 # ===================== ขีดจำกัดความเร็วข้อต่ออย่างเคร่งครัด (ป้องกัน Error Safety 100%) =====================
 # - ข้อต่อแขนท่อนใหญ่ J1-J3: จำกัดเข้มงวดที่ 100°/s (ปลอดภัยกว่า Limit 180°/s และ 191°/s มากถึง 80°/s)
 # - ข้อต่อข้อมือ J4-J6: จำกัดเข้มงวดที่ 150°/s (ปลอดภัยกว่า Preset 191°/s ถึง 41°/s)
@@ -294,11 +298,39 @@ def compute_safety_proximity(current_pose, current_q=None, qd_actual=None):
                     speed_ratio = r
         speed_ratio = min(1.0, speed_ratio)
 
+    # 5. Joint Rotation Limit Proximity: ตรวจสอบองศาหมุนข้อต่อ J1-J6 เข้าใกล้ขีดจำกัด (ช่วง 20-30°)
+    rot_limit_ratio = 0.0
+    worst_joint_idx = 5  # default Wrist 3
+    worst_joint_name = JOINT_NAMES[5]
+    worst_deg_left = 999.0
+
+    if current_q is not None and len(current_q) >= 6:
+        for i in range(6):
+            q_val = current_q[i]
+            lo, hi = JOINT_LIMITS_RAD[i]
+            d_hi = hi - q_val
+            d_lo = q_val - lo
+            d_min = min(d_hi, d_lo)
+            deg_left = math.degrees(d_min)
+
+            if d_min < JOINT_WARN_ZONE_RAD:
+                # ratio จาก 0.0 ที่ขอบ 30° วิ่งเข้าหา 1.0 เมื่อชน limit (0° เหลือ)
+                r = max(0.0, min(1.0, 1.0 - (d_min / JOINT_WARN_ZONE_RAD)))
+                if r > rot_limit_ratio:
+                    rot_limit_ratio = r
+                    worst_joint_idx = i
+                    worst_joint_name = JOINT_NAMES[i]
+                    worst_deg_left = deg_left
+
     return {
         "outer_ratio": round(outer_ratio, 3),
         "inner_ratio": round(inner_ratio, 3),
         "cylinder_ratio": round(cylinder_ratio, 3),
         "speed_ratio": round(speed_ratio, 3),
+        "rot_limit_ratio": round(rot_limit_ratio, 3),
+        "worst_joint_idx": worst_joint_idx,
+        "worst_joint_name": worst_joint_name,
+        "worst_deg_left": round(worst_deg_left, 1),
     }
 
 
@@ -417,25 +449,44 @@ def filter_cartesian_velocity(vx, vy, vz, wx=0.0, wy=0.0, wz=0.0, current_pose=N
         if not arm_scales:
             reason = f"⚡ ชะลอการหมุนข้อมือ: คุมข้อต่อ {JOINT_NAMES[worst_w_idx]} ({math.degrees(abs(qd_pred[worst_w_idx])/worst_w_scale):.1f}°/s > {math.degrees(JOINT_MAX_SPEEDS[worst_w_idx]):.0f}°/s)"
 
-    # 3b. ตรวจสอบขอบเขตข้อต่อแบบทิศทาง (Directional Joint Limit Protection)
+    # 3b. ตรวจสอบขอบเขตข้อต่อแบบทิศทางและการชะลอความเร็วก่อนถึงขีดจำกัด (Directional Joint Limit & Soft Deceleration)
     for i in range(6):
         q_val = current_q[i]
         lo, hi = JOINT_LIMITS_RAD[i]
         q_dot = qd_pred[i]
         pred_q = q_val + q_dot * dt
 
-        if pred_q > hi and q_dot > 0:
-            scale = max(0.0, min(1.0, (hi - q_val) / (q_dot * dt + 1e-6)))
-            if i < 3:
-                vx *= scale; vy *= scale; vz *= scale
-            wx *= scale; wy *= scale; wz *= scale
-            reason = f"🛑 ข้อต่อ {JOINT_NAMES[i]} ถึงขอบบน ({math.degrees(q_val):.1f}°) - บล็อกเฉพาะทิศที่ฝืน"
-        elif pred_q < lo and q_dot < 0:
-            scale = max(0.0, min(1.0, (q_val - lo) / (-q_dot * dt + 1e-6)))
-            if i < 3:
-                vx *= scale; vy *= scale; vz *= scale
-            wx *= scale; wy *= scale; wz *= scale
-            reason = f"🛑 ข้อต่อ {JOINT_NAMES[i]} ถึงขอบล่าง ({math.degrees(q_val):.1f}°) - บล็อกเฉพาะทิศที่ฝืน"
+        # ทิศทางหมุนเพิ่มขึ้น (+) มุ่งหน้าหาขอบบน hi
+        if q_dot > 0:
+            d_hi = hi - q_val
+            if d_hi <= JOINT_WARN_ZONE_RAD:
+                if pred_q >= hi or d_hi <= 0:
+                    scale = 0.0
+                    reason = f"🛑 LIMIT: Joint {JOINT_NAMES[i]} reached full rotation limit ({math.degrees(q_val):.1f}°)"
+                else:
+                    scale = max(0.0, min(1.0, d_hi / JOINT_WARN_ZONE_RAD))
+                    if reason == "OK":
+                        reason = f"⚠️ WARNING: Joint {JOINT_NAMES[i]} near rotation limit ({math.degrees(q_val):.1f}°, {math.degrees(d_hi):.1f}° left) - Slowing down"
+                if i < 3:
+                    vx *= scale; vy *= scale; vz *= scale
+                wx *= scale; wy *= scale; wz *= scale
+                qd_pred[i] *= scale
+
+        # ทิศทางหมุนลดลง (-) มุ่งหน้าหาขอบล่าง lo
+        elif q_dot < 0:
+            d_lo = q_val - lo
+            if d_lo <= JOINT_WARN_ZONE_RAD:
+                if pred_q <= lo or d_lo <= 0:
+                    scale = 0.0
+                    reason = f"🛑 LIMIT: Joint {JOINT_NAMES[i]} reached full rotation limit ({math.degrees(q_val):.1f}°)"
+                else:
+                    scale = max(0.0, min(1.0, d_lo / JOINT_WARN_ZONE_RAD))
+                    if reason == "OK":
+                        reason = f"⚠️ WARNING: Joint {JOINT_NAMES[i]} near rotation limit ({math.degrees(q_val):.1f}°, {math.degrees(d_lo):.1f}° left) - Slowing down"
+                if i < 3:
+                    vx *= scale; vy *= scale; vz *= scale
+                wx *= scale; wy *= scale; wz *= scale
+                qd_pred[i] *= scale
 
         # ป้องกัน Wrist 2 เข้าใกล้จุด Singularity ที่ 0° (|q5| < 3°) แบบนุ่มนวล
         if i == 4:
@@ -443,7 +494,7 @@ def filter_cartesian_velocity(vx, vy, vz, wx=0.0, wy=0.0, wz=0.0, current_pose=N
             if abs(pred_q) < SINGULARITY_MARGIN and abs(pred_q) < abs(q_val):
                 scale = max(0.0, min(1.0, (abs(q_val) - SINGULARITY_MARGIN) / (abs(q_dot) * dt + 1e-6)))
                 wx *= scale; wy *= scale; wz *= scale
-                reason = f"🛑 ข้อต่อ Wrist 2 เข้าใกล้ Singularity 0° ({math.degrees(q_val):.1f}°) - บล็อกทิศเข้าหา 0°"
+                reason = f"🛑 Wrist 2 approaching Singularity 0° ({math.degrees(q_val):.1f}°) - Block inward"
 
     # 4. ตรวจสอบความเร็วข้อต่อจริง (Active QD Feedback Damping แบบแยกส่วน)
     if qd_actual is not None:
@@ -474,13 +525,12 @@ def filter_cartesian_velocity(vx, vy, vz, wx=0.0, wy=0.0, wz=0.0, current_pose=N
 def filter_joint_velocity(qd, current_q, dt=0.02):
     """
     ตรวจสอบและกรองความเร็วข้อต่อ qd ตามขอบเขตความปลอดภัย (Joint Limits & Singularity):
-    - ระบบ Soft Braking: ชะลอความเร็วนุ่มนวลเมื่อเข้าใกล้ขอบเขต 5° เพื่อป้องกันกระชาก
+    - ระบบ Soft Braking: ชะลอความเร็วนุ่มนวลเมื่อเข้าใกล้ขอบเขต 20-30° เพื่อป้องกันกระชาก
     - ป้องกัน Wrist 2 เข้าใกล้จุด Singularity รอบ 0° (|q5| < 15°) แบบ Smooth Deceleration
-    - จำกัดความเร็วไม่ให้เกินขีดจำกัดปลอดภัย (แขน 50°/s, ข้อมือ 100°/s) ป้องกัน Error 100%
+    - จำกัดความเร็วไม่ให้เกินขีดจำกัดปลอดภัย (แขน 100°/s, ข้อมือ 240°/s) ป้องกัน Error 100%
     """
     filtered_qd = list(qd)
     reason = "OK"
-    buf_rad = math.radians(5.0)
 
     for i in range(6):
         q_val = current_q[i]
@@ -493,17 +543,21 @@ def filter_joint_velocity(qd, current_q, dt=0.02):
             filtered_qd[i] = math.copysign(lim, q_dot)
             q_dot = filtered_qd[i]
 
-        # 2. ระบบ Soft Braking ชะลอความเร็วก่อนถึงขอบเขต (ช่วง 5°)
-        if q_dot > 0 and q_val > (hi - buf_rad):
-            scale = max(0.0, (hi - q_val) / buf_rad)
+        # 2. ระบบ Soft Braking ชะลอความเร็วก่อนถึงขอบเขต (ช่วง 30°)
+        if q_dot > 0 and q_val > (hi - JOINT_WARN_ZONE_RAD):
+            scale = max(0.0, min(1.0, (hi - q_val) / JOINT_WARN_ZONE_RAD))
             filtered_qd[i] *= scale
             if scale == 0.0:
-                reason = f"🛑 ข้อต่อ {JOINT_NAMES[i]} ถึงขอบบน ({math.degrees(q_val):.1f}°)"
-        elif q_dot < 0 and q_val < (lo + buf_rad):
-            scale = max(0.0, (q_val - lo) / buf_rad)
+                reason = f"🛑 Joint {JOINT_NAMES[i]} reached upper limit ({math.degrees(q_val):.1f}°)"
+            elif reason == "OK":
+                reason = f"⚠️ WARNING: Joint {JOINT_NAMES[i]} near rotation limit ({math.degrees(q_val):.1f}°, {math.degrees(hi - q_val):.1f}° left) - Slowing down"
+        elif q_dot < 0 and q_val < (lo + JOINT_WARN_ZONE_RAD):
+            scale = max(0.0, min(1.0, (q_val - lo) / JOINT_WARN_ZONE_RAD))
             filtered_qd[i] *= scale
             if scale == 0.0:
-                reason = f"🛑 ข้อต่อ {JOINT_NAMES[i]} ถึงขอบล่าง ({math.degrees(q_val):.1f}°)"
+                reason = f"🛑 Joint {JOINT_NAMES[i]} reached lower limit ({math.degrees(q_val):.1f}°)"
+            elif reason == "OK":
+                reason = f"⚠️ WARNING: Joint {JOINT_NAMES[i]} near rotation limit ({math.degrees(q_val):.1f}°, {math.degrees(q_val - lo):.1f}° left) - Slowing down"
 
         # 3. ป้องกัน Wrist 2 เข้าใกล้จุด Singularity ที่ 0° (|q5| < 15°) แบบ Soft Deceleration
         if i == 4:
@@ -513,12 +567,12 @@ def filter_joint_velocity(qd, current_q, dt=0.02):
                 scale = max(0.0, (-SING_LIM - q_val) / (SING_BUF - SING_LIM))
                 filtered_qd[i] *= scale
                 if scale == 0.0:
-                    reason = f"🛑 ข้อต่อ Wrist 2 เข้าใกล้ Singularity 0° ({math.degrees(q_val):.1f}°)"
+                    reason = f"🛑 Joint Wrist 2 approaching Singularity 0° ({math.degrees(q_val):.1f}°)"
             elif q_dot < 0 and q_val > 0 and q_val < SING_BUF:
                 scale = max(0.0, (q_val - SING_LIM) / (SING_BUF - SING_LIM))
                 filtered_qd[i] *= scale
                 if scale == 0.0:
-                    reason = f"🛑 ข้อต่อ Wrist 2 เข้าใกล้ Singularity 0° ({math.degrees(q_val):.1f}°)"
+                    reason = f"🛑 Joint Wrist 2 approaching Singularity 0° ({math.degrees(q_val):.1f}°)"
 
     return filtered_qd, reason
 

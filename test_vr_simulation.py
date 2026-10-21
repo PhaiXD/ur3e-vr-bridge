@@ -326,6 +326,42 @@ def run_simulation_tests():
     else:
         print("❌ FAIL: เซิร์ฟเวอร์ไม่ได้รับคำสั่ง SHAKE")
 
+    # -------------------------------------------------------------
+    # ขั้นที่ 10: ทดสอบการชะลอความเร็วเมื่อหมุนใกล้ครบรอบ (Rotation Limit Deceleration & Haptic Warning)
+    # -------------------------------------------------------------
+    print("\n[ขั้นที่ 10] ทดสอบระบบชะลอความเร็วเมื่อหมุนใกล้ครบรอบ (20-30° Before Rotation Limit)...")
+    from robot_safety import compute_safety_proximity, filter_joint_velocity
+
+    # 1. จำลองมุมข้อต่อเมื่อ Wrist 3 หมุนไปที่ 345° (เหลือ 15° จาก Limit 360°)
+    q_near_limit = [0.0, -math.pi/2, -math.pi/2, -math.pi, -math.pi/2, math.radians(345.0)]
+    safety_prox = compute_safety_proximity([0.3, -0.1, 0.3, 0, 0, 0], current_q=q_near_limit)
+
+    rot_ratio = safety_prox.get("rot_limit_ratio", 0.0)
+    worst_j = safety_prox.get("worst_joint_name", "")
+    deg_left = safety_prox.get("worst_deg_left", 999.0)
+
+    print(f"   ตรวจพบข้อต่อเข้าใกล้ขอบเขต: {worst_j} (เหลือ {deg_left:.1f}° จาก 360°)")
+    print(f"   อัตราส่วน Proximity Ratio: {rot_ratio:.3f} (เริ่มสั่นเตือนที่ข้อมือ bHaptics)")
+
+    # 2. ตรวจสอบการชะลอความเร็วในทิศทางที่ฝืนเข้าหาขอบเขต (q_dot > 0)
+    test_qd = [0.0, 0.0, 0.0, 0.0, 0.0, 1.0] # หมุน Wrist 3 ไปข้างหน้า +1.0 rad/s
+    filtered_qd, reason = filter_joint_velocity(test_qd, q_near_limit)
+    decel_scale = filtered_qd[5] / test_qd[5]
+    print(f"   ความเร็วหมุนฝืนต่อ: จาก {test_qd[5]:.2f} rad/s ชะลอลงเหลือ {filtered_qd[5]:.2f} rad/s (สเกล {decel_scale*100:.1f}%)")
+
+    # 3. ตรวจสอบการหมุนถอยกลับ (q_dot < 0) ต้องหมุนถอยได้ 100% เต็มพิกัด
+    reverse_qd = [0.0, 0.0, 0.0, 0.0, 0.0, -1.0]
+    filtered_rev, _ = filter_joint_velocity(reverse_qd, q_near_limit)
+    rev_scale = filtered_rev[5] / reverse_qd[5]
+    print(f"   ความเร็วหมุนถอยกลับ: {filtered_rev[5]:.2f} rad/s (ถอยกลับได้เต็ม {rev_scale*100:.0f}%)")
+
+    step10_ok = (rot_ratio > 0.40) and (0.3 < decel_scale < 0.7) and (abs(rev_scale - 1.0) < 1e-4)
+    test_results["Rotation_Limit_Deceleration"] = step10_ok
+    if step10_ok:
+        print("✅ PASS: ชะลอความเร็วนุ่มนวลในโซน 20-30° ก่อนชน Limit และหมุนถอยกลับได้ 100% เต็มสปีด")
+    else:
+        print(f"❌ FAIL: การชะลอความเร็วไม่ถูกต้อง (scale={decel_scale:.2f})")
+
     # ปิดการเชื่อมต่อ
     client.close()
     server.stop()

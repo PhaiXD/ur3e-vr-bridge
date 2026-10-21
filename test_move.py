@@ -1366,6 +1366,10 @@ if __name__ == "__main__":
                 vr_server.send_feedback(cached_gripper_pos, smooth_grip_force, speed_pct, actual_tcp_pose=current_pose, safety_proximity=safety_prox)
                 if 'safety_reason' in locals() and safety_reason != "OK":
                     vr_server.send_alert("WARNING", safety_reason)
+                elif safety_prox.get("rot_limit_ratio", 0.0) > 0.05:
+                    w_j = safety_prox.get("worst_joint_name", "Wrist")
+                    deg_l = safety_prox.get("worst_deg_left", 0.0)
+                    vr_server.send_alert("WARNING", f"ROTATION LIMIT WARNING: {w_j} near rotation limit ({deg_l:.1f}° remaining) - Decelerating")
 
             current_time = time.time()
             if current_time - last_force_print >= FORCE_PRINT_INTERVAL:

@@ -79,13 +79,16 @@ class VRBridgeServer:
             if actual_tcp_pose is not None and len(actual_tcp_pose) >= 6:
                 x, y, z, rx, ry, rz = actual_tcp_pose[:6]
                 base_msg = f"STATUS {int(actual_pos)} {float(force_n):.2f} {int(speed_pct)} {x:.4f} {y:.4f} {z:.4f} {rx:.4f} {ry:.4f} {rz:.4f}"
-                # Append safety proximity ratios if available
+                # Append safety proximity ratios if available (including Joint Rotation Limits)
                 if safety_proximity is not None:
                     o_r = safety_proximity.get("outer_ratio", 0.0)
                     i_r = safety_proximity.get("inner_ratio", 0.0)
                     c_r = safety_proximity.get("cylinder_ratio", 0.0)
                     s_r = safety_proximity.get("speed_ratio", 0.0)
-                    msg = f"{base_msg} {o_r:.3f} {i_r:.3f} {c_r:.3f} {s_r:.3f}\n"
+                    rot_r = safety_proximity.get("rot_limit_ratio", 0.0)
+                    j_idx = safety_proximity.get("worst_joint_idx", 5)
+                    deg_left = safety_proximity.get("worst_deg_left", 999.0)
+                    msg = f"{base_msg} {o_r:.3f} {i_r:.3f} {c_r:.3f} {s_r:.3f} {rot_r:.3f} {int(j_idx)} {deg_left:.1f}\n"
                 else:
                     msg = f"{base_msg}\n"
             else:
