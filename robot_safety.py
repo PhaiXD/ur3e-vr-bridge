@@ -13,14 +13,14 @@ DH = [
 
 SHOULDER_Z = 0.1519       # ความสูงจุดหมุน Shoulder จากระนาบฐานหุ่น (m)
 # ===================== ขอบเขตพื้นที่ทำงาน (จากคู่มือ UR3e Manual §5.1, §5.3, §8.4 และ docs/ur3e_manual_limits.md §7) =====================
-# Outer Safety Sphere: สำหรับ TCP พร้อมหัวจับ Robotiq 2F (ระยะเอื้อมสูงสุดตามทฤษฎี ~700mm)
-# ตามคู่มือ Manual §7: TCP with ~10% margin = 630mm (0.630m) จาก Shoulder
-SPHERE_MAX = 0.630        # รัศมีทรงกลมสูงสุดจาก Shoulder (630 mm สำหรับ Robotiq 2F TCP)
+# Outer Safety Sphere: ปรับให้สอดคล้องกับระยะเอื้อมทางกายภาพจริงและ Safety Barrier ของ Unity (~55cm จาก Base)
+# ตามคู่มือ Manual §5.1: Working Radius 500mm + Robotiq 2F TCP Margin = 520mm (0.520m) จาก Shoulder
+SPHERE_MAX = 0.520        # รัศมีทรงกลมสูงสุดจาก Shoulder (520 mm สำหรับ Robotiq 2F TCP สอดคล้องระยะเอื้อม 55 cm จาก Base)
 # Inner Safety Sphere: ป้องกัน Gripper / ปลายมือ ชนฐานหุ่นยนต์และ Shoulder Housing ตาม Manual §7
 SPHERE_MIN = 0.210        # รัศมีทรงกลมต่ำสุดจาก Shoulder (210 mm สำหรับ Robotiq 2F TCP)
 # Forbidden Vertical Cylinder: ป้องกัน Singularity บริเวณแกน Z ของฐาน (base radius 64mm + margin)
 CYLINDER_RADIUS = 0.095   # รัศมีทรงกระบอกห้ามรอบแกน Z ฐาน (95 mm) ตาม Manual §5.3.1
-MAX_REACH_XY = 0.600      # ระยะเอื้อมแนวราบสูงสุด (600 mm) สอดคล้อง SPHERE_MAX
+MAX_REACH_XY = 0.520      # ระยะเอื้อมแนวราบสูงสุด (520 mm) สอดคล้อง SPHERE_MAX
 MIN_Z = -0.050            # ความสูงต่ำสุด Base Frame (-50 mm หรือ -450 mm บน Pendant ถึงชั้นวางล่าง)
 MAX_Z = 0.720             # ความสูงสูงสุด Base Frame (720 mm หรือ +320 mm บน Pendant)
 # TCP Linear Speed Cap: ต่ำกว่า Reduced Mode 750 mm/s มากพอสำหรับ VR teleoperation ที่ปลอดภัย
