@@ -539,6 +539,52 @@ def move_to_safe_home(rtde_c, rtde_r):
         return False
 
 
+def execute_auto_shake(rtde_c, rtde_r, vr_server=None, tare_func=None):
+    """
+    เขย่าสารอัตโนมัติ (Automatic Test Tube Shaking):
+    1. เคลื่อนที่ไปที่ท่า Safe Home ก่อนเสมอเพื่อความปลอดภัยและพื้นที่ทำงานโล่ง
+    2. จากมุมองศา home (Wrist 3 = 180°):
+       - คว่ำหลอดทดลอง: หมุน Wrist 3 180° (ไปที่ 0°)
+       - พลิกกลับมา: หมุน Wrist 3 -180° (กลับมาที่ 180°)
+       - ทำแบบนี้ 3 รอบอย่างราบรื่นและนุ่มนวล
+    3. เมื่อเสร็จ ทำการ Auto-Tare และแจ้งเตือนสถานะกลับไปยัง Unity HUD
+    """
+    print("\n🧪 [Auto Shake] เริ่มกระบวนการเขย่าสารอัตโนมัติ 3 รอบ...")
+    if vr_server:
+        vr_server.send_alert("INFO", "🧪 เริ่มเขย่าสารอัตโนมัติ: กำลังเคลื่อนที่ไปท่า Home...")
+
+    move_to_safe_home(rtde_c, rtde_r)
+    time.sleep(0.3)
+
+    q_home = list(HOME_Q)
+    q_inverted = list(HOME_Q)
+    q_inverted[5] = math.radians(0)  # หมุน Wrist 3 คว่ำหลอด 180° (จาก 180° -> 0°)
+
+    SHAKE_SPEED = 3.2   # rad/s (~185°/s) หมุนเร็ว มั่นคง ไม่กระชาก
+    SHAKE_ACCEL = 4.5   # rad/s²
+
+    for cycle in range(1, 4):
+        print(f"   🔄 [รอบที่ {cycle}/3] กำลังคว่ำหลอดทดลอง (180°)...")
+        if vr_server:
+            vr_server.send_alert("INFO", f"🧪 กำลังเขย่าสาร... รอบที่ {cycle}/3 (คว่ำ 180°)")
+        rtde_c.moveJ(q_inverted, SHAKE_SPEED, SHAKE_ACCEL)
+        time.sleep(0.25)
+
+        print(f"   🔄 [รอบที่ {cycle}/3] กำลังพลิกหลอดกลับ (-180°)...")
+        if vr_server:
+            vr_server.send_alert("INFO", f"🧪 กำลังเขย่าสาร... รอบที่ {cycle}/3 (หงายกลับ -180°)")
+        rtde_c.moveJ(q_home, SHAKE_SPEED, SHAKE_ACCEL)
+        time.sleep(0.25)
+
+    print("✅ [Auto Shake] เขย่าสารอัตโนมัติครบ 3 รอบเรียบร้อยแล้ว!")
+    if vr_server:
+        vr_server.send_alert("SUCCESS", "✅ เขย่าสารอัตโนมัติครบ 3 รอบเรียบร้อยแล้ว!")
+
+    if tare_func:
+        tare_func("เสร็จสิ้นการเขย่าสารอัตโนมัติ 3 รอบ")
+    return True
+
+
 # ==================== โปรแกรมหลัก ====================
 if __name__ == "__main__":
     print(f"กำลังเชื่อมต่อไปที่หุ่นยนต์ UR3e IP: {ROBOT_IP} ...")
@@ -558,7 +604,8 @@ if __name__ == "__main__":
         vr_hand_state = {
             "grip_pos": 0,
             "tare_requested": False,
-            "home_requested": False
+            "home_requested": False,
+            "shake_requested": False
         }
         vr_invert = {
             "x": False, "y": False, "z": False,
@@ -600,6 +647,10 @@ if __name__ == "__main__":
             with vr_vel_lock:
                 vr_hand_state["home_requested"] = True
 
+        def on_vr_shake():
+            with vr_vel_lock:
+                vr_hand_state["shake_requested"] = True
+
         # เริ่มต้น VR Bridge Server (TCP Port 5555 สำหรับเชื่อม Unity Meta Quest Hand Tracking)
         try:
             from vr_bridge_server import VRBridgeServer
@@ -609,7 +660,8 @@ if __name__ == "__main__":
                 on_move_callback=on_vr_move,
                 on_tare_callback=on_vr_tare,
                 on_pose_callback=on_vr_pose,
-                on_home_callback=on_vr_home
+                on_home_callback=on_vr_home,
+                on_shake_callback=on_vr_shake
             )
             vr_server.start()
         except Exception as e:
@@ -644,10 +696,12 @@ if __name__ == "__main__":
         print("   [1] / [2] / [3]  : สลับทิศทาง VR เชิงเส้น (1:หน้า-หลัง, 2:ซ้าย-ขวา, 3:ขึ้น-ลง)")
         print("   [4] / [5] / [6]  : สลับทิศทาง VR การหมุน (4:Roll บิดข้อมือ, 5:Pitch ก้ม-เงย, 6:Yaw หันซ้าย-ขวา)")
         print("   [T]              : Tare / เซ็ตศูนย์แรง Fz (วัดแรงบีบ Gripper แม่นยำ)")
+        print("   [K]              : เขย่าสารอัตโนมัติ (Shake Test Tube 3 Cycles) คว่ำ 180° และหันกลับ -180°")
         print("   🖐️ Auto-Tare    : เมื่ออ้านิ้วระดับ <= 35/255 จะ Calibrate เซ็ตศูนย์แรง Fz อัตโนมัติทุกครั้ง (เหมือนกด [T])")
         print("   [Q]              : ออกจากโปรแกรม")
+        print("   🎮 Left Remote   : [X] Set Origin & Home | [Y] Pause/Resume แขนกล | [Joy Stick Click] เขย่าสารอัตโนมัติ 3 รอบ")
         print("   🥽 VR Hand      : ขยับมือ = แขนกลขยับตาม | บิด/ก้มเงย/หันมือ = แขนกลหมุนตาม (6-DOF) | หนีบนิ้ว = Gripper หนีบ")
-        print("   🧤 bHaptics      : ถุงมือสั่นตอบสนองตามแรงจริง Fz จาก Gripper")
+        print("   🧤 bHaptics      : ถุงมือสั่นตอบสนองตามแรงจริง Fz จาก Gripper | จีบสุดสั่น 100% ไม่มีเงื่อนไข")
         print("   📈 UKF Filter    : กรองแรงบีบ Fz ด้วย Unscented Kalman Filter สมูทและเนียน ไร้ Noise")
         print("==================================================")
 
@@ -700,6 +754,7 @@ if __name__ == "__main__":
         gripper_moving_close = False
         gripper_moving_open = False
         prev_h_pressed = False
+        prev_k_pressed = False
         prev_1_pressed = False
         prev_2_pressed = False
         prev_3_pressed = False
@@ -777,6 +832,31 @@ if __name__ == "__main__":
                 # Auto-Tare เมื่อกลับถึง Home เพื่อตัดการสั่นค้าง
                 perform_tare(f"กลับถึง Safe Home ({trigger_source})")
             prev_h_pressed = h_pressed
+
+            # 4a. ตรวจสอบคำสั่งเขย่าสารอัตโนมัติ (Edge Trigger จากแป้นพิมพ์ [K] หรือคำสั่ง SHAKE จากปุ่ม Thumbstick ซ้ายใน VR)
+            with vr_vel_lock:
+                vr_shake_req = vr_hand_state["shake_requested"]
+                vr_hand_state["shake_requested"] = False
+
+            k_pressed = keyboard.is_pressed('k')
+            if (k_pressed and not prev_k_pressed) or vr_shake_req:
+                trigger_source = "ปุ่ม Joy Stick บนรีโมทซ้าย (VR Left Thumbstick Click)" if vr_shake_req else "กดปุ่ม [K]"
+                print(f"\n🧪 ได้รับคำสั่งเขย่าสารอัตโนมัติ 3 รอบ จาก: {trigger_source}")
+                if was_moving_arm:
+                    rtde_c.speedStop(STOP_ACCEL)
+                    was_moving_arm = False
+                current_cart_cmd = [0.0] * 6
+                with vr_vel_lock:
+                    vr_pose_state["target_pose"] = None
+                    vr_vel = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                is_pose_settled = False
+                is_rot_settled = False
+                execute_auto_shake(rtde_c, rtde_r, vr_server=vr_server, tare_func=perform_tare)
+                time.sleep(0.3)
+                current_pose = rtde_r.getActualTCPPose()
+                if 'vr_server' in locals() and vr_server:
+                    vr_server.send_feedback(cached_gripper_pos, smooth_grip_force, speed_pct, actual_tcp_pose=current_pose)
+            prev_k_pressed = k_pressed
 
             # 4b. สลับทิศทางแกน VR Hand ทันที (Edge Trigger บนแป้นตัวเลขแถวบน ไม่ชนกับ Numpad)
             p1 = keyboard.is_pressed('1') and not is_num_key(1)
@@ -1261,6 +1341,17 @@ if __name__ == "__main__":
                 clean_force = raw_delta - FORCE_DEADBAND
             else:
                 clean_force = 0.0
+
+            # ป้องกันแรงสั่นหลอน (Spurious Vibration) ขณะมืออ้าหรือแขนกลเคลื่อนที่ในอากาศ:
+            # หาก Gripper เปิดอยู่ (cached_gripper_pos <= 35) และไม่มีการสั่งหนีบจาก VR จะตัดแรงเป็น 0.0 ทันที
+            with vr_vel_lock:
+                current_vr_grip_cmd = vr_hand_state.get("grip_pos", 0)
+            if cached_gripper_pos <= 35 and current_vr_grip_cmd <= 35:
+                clean_force = 0.0
+            elif getattr(gripper, 'contact_detected', False):
+                # หาก Gripper หนีบโดนวัตถุแน่น (OBJ 2) ให้ผสานแรงบีบจริงเข้ากับแรงกระทำภายนอก
+                contact_force_floor = 18.0 + (GRIPPER_FORCE / 255.0) * (25.0 - 18.0)
+                clean_force = max(clean_force, contact_force_floor)
 
             smooth_grip_force = ukf_force.update(clean_force)
             if clean_force == 0.0 and smooth_grip_force < 0.08:

@@ -22,7 +22,7 @@ class VRBridgeServer:
     - รับคำสั่ง: 'MOVE <vx> <vy> <vz> [wx] [wy] [wz]\n' (ความเร็ว 6-DOF จากมือ VR, หน่วย m/s และ rad/s)
     - ส่งสถานะกลับ: 'STATUS <pos> <force_n>\n'
     """
-    def __init__(self, host=DEFAULT_HOST, port=DEFAULT_PORT, on_grip_callback=None, on_move_callback=None, on_tare_callback=None, on_pose_callback=None, on_home_callback=None):
+    def __init__(self, host=DEFAULT_HOST, port=DEFAULT_PORT, on_grip_callback=None, on_move_callback=None, on_tare_callback=None, on_pose_callback=None, on_home_callback=None, on_shake_callback=None):
         self.host = host
         self.port = port
         self.on_grip_callback = on_grip_callback
@@ -30,6 +30,7 @@ class VRBridgeServer:
         self.on_tare_callback = on_tare_callback
         self.on_pose_callback = on_pose_callback
         self.on_home_callback = on_home_callback
+        self.on_shake_callback = on_shake_callback
         self.server_sock = None
         self.client_sock = None
         self.running = False
@@ -180,6 +181,12 @@ class VRBridgeServer:
                                         self.on_home_callback()
                                     except Exception as ex:
                                         print(f"⚠️ [VR Bridge] on_home_callback error: {ex}")
+                            elif line.startswith("SHAKE"):
+                                if self.on_shake_callback:
+                                    try:
+                                        self.on_shake_callback()
+                                    except Exception as ex:
+                                        print(f"⚠️ [VR Bridge] on_shake_callback error: {ex}")
 
                         # 1. ประมวลผลคำสั่ง 'GRIP' ล่าสุดในรอบนี้ (ตัดคำสั่งเก่าตกค้าง ป้องกัน Delay)
                         if latest_grip_cmd:
