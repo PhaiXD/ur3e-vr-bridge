@@ -42,7 +42,7 @@ JOINT_NAMES = ["Base", "Shoulder", "Elbow", "Wrist 1", "Wrist 2", "Wrist 3"]
 # - ข้อต่อแขนท่อนใหญ่ J1-J3: จำกัดเข้มงวดที่ 100°/s (ปลอดภัยกว่า Limit 180°/s และ 191°/s มากถึง 80°/s)
 # - ข้อต่อข้อมือ J4-J6: จำกัดเข้มงวดที่ 150°/s (ปลอดภัยกว่า Preset 191°/s ถึง 41°/s)
 MAX_SAFE_JOINT_SPEED_ARM_DEG = 100.0
-MAX_SAFE_JOINT_SPEED_WRIST_DEG = 150.0
+MAX_SAFE_JOINT_SPEED_WRIST_DEG = 240.0
 MAX_SAFE_JOINT_SPEED_DEG = MAX_SAFE_JOINT_SPEED_ARM_DEG
 MAX_SAFE_JOINT_SPEED = math.radians(MAX_SAFE_JOINT_SPEED_ARM_DEG)
 MAX_SAFE_ARM_SPEED = math.radians(MAX_SAFE_JOINT_SPEED_ARM_DEG)
@@ -379,29 +379,43 @@ def filter_cartesian_velocity(vx, vy, vz, wx=0.0, wy=0.0, wz=0.0, current_pose=N
     J, _ = compute_ur3e_jacobian(current_q)
     qd_pred = solve_dls_system(J, v_cmd, damping=0.025)
 
-    # 3a. ควบคุมความเร็วข้อต่อล่วงหน้าอย่างเข้มงวด (Strict Joint Speed Limiter - ป้องกัน Error Safety 100%):
-    # - แขน J1-J3 <= 100°/s
-    # - ข้อมือ J4-J6 <= 150°/s
-    # หากข้อต่อใดเกินขีดจำกัด จะสเกลความเร็วเชิงเส้นและเชิงมุมลงอย่างได้สัดส่วนทันที
-    all_joint_scales = []
-    worst_joint_idx = 0
-    for i in range(6):
+    # 3a. ควบคุมความเร็วข้อต่อล่วงหน้าอย่างเข้มงวด (Strict Joint Speed Limiter):
+    # แยกการคุมความเร็วระหว่าง Arm Joints (J1-J3) กับ Wrist Joints (J4-J6):
+    # - หากข้อต่อแขน (J1-J3) เกิน: สเกลทั้ง linear [vx, vy, vz] และ angular [wx, wy, wz]
+    # - หากข้อต่อข้อมือ (J4-J6) เกิน: สเกลเฉพาะ angular [wx, wy, wz] ไม่สเกล linear velocity ลง เพื่อให้การขยับแขนกลคล่องแคล่ว ฉับไว ไร้ความหน่วงหนืด
+    arm_scales = []
+    wrist_scales = []
+    for i in range(3):
         lim = JOINT_MAX_SPEEDS[i]
         q_spd = abs(qd_pred[i])
         if q_spd > lim:
-            r = lim / q_spd
-            all_joint_scales.append((r, i))
+            arm_scales.append((lim / q_spd, i))
+    for i in range(3, 6):
+        lim = JOINT_MAX_SPEEDS[i]
+        q_spd = abs(qd_pred[i])
+        if q_spd > lim:
+            wrist_scales.append((lim / q_spd, i))
 
-    if all_joint_scales:
-        worst_scale, worst_joint_idx = min(all_joint_scales, key=lambda x: x[0])
-        vx *= worst_scale
-        vy *= worst_scale
-        vz *= worst_scale
-        wx *= worst_scale
-        wy *= worst_scale
-        wz *= worst_scale
-        qd_pred = [q_dot * worst_scale for q_dot in qd_pred]
-        reason = f"⚡ ชะลอความเร็วเข้มงวด: คุมข้อต่อ {JOINT_NAMES[worst_joint_idx]} ({math.degrees(abs(qd_pred[worst_joint_idx])/worst_scale):.1f}°/s > {math.degrees(JOINT_MAX_SPEEDS[worst_joint_idx]):.0f}°/s)"
+    if arm_scales:
+        worst_arm_scale, worst_arm_idx = min(arm_scales, key=lambda x: x[0])
+        vx *= worst_arm_scale
+        vy *= worst_arm_scale
+        vz *= worst_arm_scale
+        wx *= worst_arm_scale
+        wy *= worst_arm_scale
+        wz *= worst_arm_scale
+        qd_pred = [q_dot * worst_arm_scale for q_dot in qd_pred]
+        reason = f"⚡ ชะลอความเร็วแขน: คุมข้อต่อ {JOINT_NAMES[worst_arm_idx]} ({math.degrees(abs(qd_pred[worst_arm_idx])/worst_arm_scale):.1f}°/s > {math.degrees(JOINT_MAX_SPEEDS[worst_arm_idx]):.0f}°/s)"
+
+    if wrist_scales:
+        worst_w_scale, worst_w_idx = min(wrist_scales, key=lambda x: x[0])
+        wx *= worst_w_scale
+        wy *= worst_w_scale
+        wz *= worst_w_scale
+        for j in range(3, 6):
+            qd_pred[j] *= worst_w_scale
+        if not arm_scales:
+            reason = f"⚡ ชะลอการหมุนข้อมือ: คุมข้อต่อ {JOINT_NAMES[worst_w_idx]} ({math.degrees(abs(qd_pred[worst_w_idx])/worst_w_scale):.1f}°/s > {math.degrees(JOINT_MAX_SPEEDS[worst_w_idx]):.0f}°/s)"
 
     # 3b. ตรวจสอบขอบเขตข้อต่อแบบทิศทาง (Directional Joint Limit Protection)
     for i in range(6):
@@ -412,21 +426,22 @@ def filter_cartesian_velocity(vx, vy, vz, wx=0.0, wy=0.0, wz=0.0, current_pose=N
 
         if pred_q > hi and q_dot > 0:
             scale = max(0.0, min(1.0, (hi - q_val) / (q_dot * dt + 1e-6)))
-            vx *= scale; vy *= scale; vz *= scale
+            if i < 3:
+                vx *= scale; vy *= scale; vz *= scale
             wx *= scale; wy *= scale; wz *= scale
             reason = f"🛑 ข้อต่อ {JOINT_NAMES[i]} ถึงขอบบน ({math.degrees(q_val):.1f}°) - บล็อกเฉพาะทิศที่ฝืน"
         elif pred_q < lo and q_dot < 0:
             scale = max(0.0, min(1.0, (q_val - lo) / (-q_dot * dt + 1e-6)))
-            vx *= scale; vy *= scale; vz *= scale
+            if i < 3:
+                vx *= scale; vy *= scale; vz *= scale
             wx *= scale; wy *= scale; wz *= scale
             reason = f"🛑 ข้อต่อ {JOINT_NAMES[i]} ถึงขอบล่าง ({math.degrees(q_val):.1f}°) - บล็อกเฉพาะทิศที่ฝืน"
 
-        # ป้องกัน Wrist 2 เข้าใกล้จุด Singularity ที่ 0° (|q5| < 15°)
+        # ป้องกัน Wrist 2 เข้าใกล้จุด Singularity ที่ 0° (|q5| < 3°) แบบนุ่มนวล
         if i == 4:
-            SINGULARITY_MARGIN = math.radians(15)
+            SINGULARITY_MARGIN = math.radians(3.0)
             if abs(pred_q) < SINGULARITY_MARGIN and abs(pred_q) < abs(q_val):
                 scale = max(0.0, min(1.0, (abs(q_val) - SINGULARITY_MARGIN) / (abs(q_dot) * dt + 1e-6)))
-                vx *= scale; vy *= scale; vz *= scale
                 wx *= scale; wy *= scale; wz *= scale
                 reason = f"🛑 ข้อต่อ Wrist 2 เข้าใกล้ Singularity 0° ({math.degrees(q_val):.1f}°) - บล็อกทิศเข้าหา 0°"
 
