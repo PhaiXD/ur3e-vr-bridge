@@ -254,7 +254,8 @@ class VRBridgeServer:
                     except socket.timeout:
                         continue
                     except Exception as ex:
-                        print(f"⚠️ [VR Bridge] Client read error: {ex}")
+                        if self.running:
+                            print(f"⚠️ [VR Bridge] Client read error: {ex}")
                         break
 
                 if self.client_sock:

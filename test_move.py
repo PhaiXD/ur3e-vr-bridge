@@ -766,6 +766,8 @@ if __name__ == "__main__":
         prev_m_pressed = False
         prev_comma_pressed = False
         speed_level = 1.0  # 1.0 = 100%, 0.5 = 50%, 3.0 = MAX 300%
+        speed_pct = int(round(speed_level * 100))
+        smooth_grip_force = 0.0
         current_stream_qd = [0.0] * 6  # ตัวแปรจำความเร็วข้อต่อสำหรับการทำ Velocity Ramp นุ่มนวล ไร้ Jerk
         current_cart_cmd = [0.0] * 6   # ตัวแปรจำความเร็ว Cartesian 6-DOF สำหรับทำ S-curve Velocity Ramp ไร้แรงกระชากเมื่อกลับทิศทาง
         is_pose_settled = False        # สถานะหยุดนิ่งสนิทตามพิกัด (Hysteresis Deadband ป้องกันอาการสั่น/โยกซ้ายขวา)
@@ -777,6 +779,7 @@ if __name__ == "__main__":
 
         while True:
             t_loop_start = time.time()
+            speed_pct = int(round(speed_level * 100))
             # 1. ตรวจสอบ Protective Stop ก่อน
             if check_protective_stop(rtde_r):
                 print("\n🛑 ตรวจพบ PROTECTIVE STOP!")
@@ -933,12 +936,14 @@ if __name__ == "__main__":
             p_n = keyboard.is_pressed('n') or keyboard.is_pressed(49)
             if p_n and not prev_n_pressed:
                 speed_level = 0.5
+                speed_pct = int(round(speed_level * 100))
                 print(f"\n🐢 [ระดับความเร็ว]: 50% (SMOOTH={SMOOTH_SPEED*speed_level*1000:.0f} mm/s, ROT={math.degrees(ROT_SPEED*speed_level):.1f}°/s - โหมดงานละเอียด)\n")
             prev_n_pressed = p_n
 
             p_m = keyboard.is_pressed('m') or keyboard.is_pressed(50)
             if p_m and not prev_m_pressed:
                 speed_level = 1.0
+                speed_pct = int(round(speed_level * 100))
                 print(f"\n🚀 [ระดับความเร็ว]: 100% (SMOOTH={SMOOTH_SPEED*speed_level*1000:.0f} mm/s, ROT={math.degrees(ROT_SPEED*speed_level):.1f}°/s - ความเร็วปกติเต็มพิกัด)\n")
             prev_m_pressed = p_m
 
@@ -950,6 +955,7 @@ if __name__ == "__main__":
                 pass
             if p_comma and not prev_comma_pressed:
                 speed_level = 3.0  # MAX Mode (300% speed, 210 mm/s, high acceleration 0.75 m/s²)
+                speed_pct = int(round(speed_level * 100))
                 print(f"\n⚡⚡⚡ [ระดับความเร็ว]: MAX เต็มพิกัด 300% (SMOOTH={SMOOTH_SPEED*speed_level*1000:.0f} mm/s, ACCEL={min(1.0, SMOOTH_ACCEL*speed_level):.2f} m/s², ROT={math.degrees(ROT_SPEED*speed_level):.1f}°/s)")
                 print("   🎮 โหมด Real-time สูงสุด: ขยับตามแขนและมือ VR ฉับไว ไร้ความหน่วง!\n")
             prev_comma_pressed = p_comma
