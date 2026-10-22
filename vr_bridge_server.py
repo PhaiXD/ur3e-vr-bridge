@@ -39,6 +39,8 @@ class VRBridgeServer:
         self.latest_force = 0.0
         self.latest_vel = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # vx, vy, vz, wx, wy, wz จาก VR
         self.latest_target_pose = None                     # [x, y, z, rx, ry, rz] Target Pose จาก VR
+        self.is_teleop_paused = False                      # Pause teleoperation freeze state
+        self.on_pause_callback = None
         self.client_address = None
 
     def start(self):
@@ -190,6 +192,18 @@ class VRBridgeServer:
                                         self.on_shake_callback()
                                     except Exception as ex:
                                         print(f"⚠️ [VR Bridge] on_shake_callback error: {ex}")
+                            elif line.startswith("PAUSE"):
+                                parts = line.split()
+                                if len(parts) >= 2:
+                                    self.is_teleop_paused = (parts[1].strip() == "1")
+                                else:
+                                    self.is_teleop_paused = not self.is_teleop_paused
+                                print(f"⏸️ [VR Bridge] Teleoperation Pause state: {self.is_teleop_paused}")
+                                if self.on_pause_callback:
+                                    try:
+                                        self.on_pause_callback(self.is_teleop_paused)
+                                    except Exception as ex:
+                                        print(f"⚠️ [VR Bridge] on_pause_callback error: {ex}")
 
                         # 1. ประมวลผลคำสั่ง 'GRIP' ล่าสุดในรอบนี้ (ตัดคำสั่งเก่าตกค้าง ป้องกัน Delay)
                         if latest_grip_cmd:

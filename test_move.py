@@ -1174,6 +1174,22 @@ if __name__ == "__main__":
             # ------------------------------------------------------------
             # ตรวจสอบและสั่งการเคลื่อนที่ (Joint Space: speedJ / Cartesian Space: speedL)
             # ------------------------------------------------------------
+            # ด่านตรวจ Pause จากปุ่ม Y บน Meta Quest Touch Remote:
+            # หากอยู่ในสถานะ Pause ให้ตัดความเร็วทั้งหมดเป็น 0, เคลียร์ Target Pose และหยุดแขนกลทันที
+            if getattr(vr_server, 'is_teleop_paused', False):
+                vx = vy = vz = wx = wy = wz = 0.0
+                qd_wrist = [0.0] * 6
+                current_stream_qd = [0.0] * 6
+                current_cart_cmd = [0.0] * 6
+                with vr_pose_lock:
+                    vr_pose_state["target_pose"] = None
+                if was_moving_arm:
+                    try:
+                        rtde_c.speedStop(STOP_ACCEL)
+                    except Exception:
+                        pass
+                    was_moving_arm = False
+
             is_wrist_moving = any(q != 0.0 for q in qd_wrist)
             is_cart_moving = (vx != 0.0 or vy != 0.0 or vz != 0.0 or wx != 0.0 or wy != 0.0 or wz != 0.0)
             is_streaming_wrist = any(abs(q) > 1e-4 for q in current_stream_qd)
