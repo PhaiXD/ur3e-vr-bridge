@@ -424,6 +424,11 @@ def fix_vr_hand_stereo_fixer():
     content = read_file(path)
     changed = False
 
+    # Ensure using UnityEngine.UI is included for Image type
+    if "using UnityEngine.UI;" not in content:
+        content = content.replace("using UnityEngine;\n", "using UnityEngine;\nusing UnityEngine.UI;\n", 1)
+        changed = True
+
     # ================================================================
     # FIX: Also enable instancing on any material found on UI Images
     # This catches Vision Pro materials that were loaded at runtime
