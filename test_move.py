@@ -560,8 +560,8 @@ def execute_auto_shake(rtde_c, rtde_r, vr_server=None, tare_func=None):
     q_inverted = list(HOME_Q)
     q_inverted[5] = math.radians(0)  # หมุน Wrist 3 คว่ำหลอด 180° (จาก 180° -> 0°)
 
-    SHAKE_SPEED = 3.2   # rad/s (~185°/s) หมุนเร็ว มั่นคง ไม่กระชาก
-    SHAKE_ACCEL = 4.5   # rad/s²
+    SHAKE_SPEED = 2.8   # rad/s (~160°/s) ภายในขีดจำกัด UR3e (<= 3.14 rad/s)
+    SHAKE_ACCEL = 3.5   # rad/s²
 
     for cycle in range(1, 4):
         print(f"   🔄 [รอบที่ {cycle}/3] กำลังคว่ำหลอดทดลอง (180°)...")

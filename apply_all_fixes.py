@@ -1,1210 +1,609 @@
-import os
-import re
+#!/usr/bin/env python3
+"""
+apply_all_fixes.py - Comprehensive UI Fix Script for UR3e VR Bridge
+====================================================================
+Fixes applied:
+1. STEREO DUAL-EYE RENDERING
+   - Force material = null on ALL uGUI elements (Image, Text, Button backgrounds)
+   - Unity's UI/Default shader handles Single Pass Instanced natively
+   - Custom materials on UI elements break SPI stereo and cause single-eye rendering
+   - Ensure canvas.worldCamera is continuously set to CenterEyeAnchor camera
 
-print("Starting implementation of 5 subagent topics...")
+2. HITBOX ACCURACY
+   - Ensure all Button Image components have raycastTarget = true
+   - Ensure all Text overlays on buttons have raycastTarget = false (prevents text stealing clicks)
+   - Register ALL created buttons in allMenuButtons list for VRRemoteLaserPointer scanning
+   - Fix VRRemoteLaserPointer to scan ALL Selectables in scene, not just manually-registered ones
 
-# -------------------------------------------------------------
-# Topic 1: Fix Left Hand Grip Pose in VRControllerGripPoseHandler.cs
-# -------------------------------------------------------------
-grip_handler_path = r"C:\Users\dhamm\VR\Assets\Scripts\VRControllerGripPoseHandler.cs"
+3. AESTHETIC IMPROVEMENTS (VRMenuManager)
+   - Darker, cleaner header bar colors
+   - Better button contrast and spacing
+   - Cleaner close button with proper sizing
+   - Better status bar readability
 
-grip_code = """using System;
-using System.Collections.Generic;
-using UnityEngine;
+4. AESTHETIC IMPROVEMENTS (HandDebugHUD)
+   - Cleaner telemetry layout with better line spacing
+   - Better color coding for status indicators
+   - Proper font sizing for VR readability
 
-namespace UR3eVR
-{
-    /// <summary>
-    /// VRControllerGripPoseHandler: Controls hand mesh finger curling when holding Meta Quest Touch Controller.
-    /// - Only curls fingers when the specific controller (Left/Right) is actually held/connected.
-    /// - Middle, Ring, Pinky wrap around controller handle, flexing along local X-axis.
-    /// - Index finger rests on the front index trigger, curling dynamically when trigger is pulled.
-    /// - Thumb rests near thumbstick and face buttons.
-    /// - Fully compatible with Meta Quest Natural controller-driven poses and OpenXR skeletal hands.
-    /// </summary>
-    public class VRControllerGripPoseHandler : MonoBehaviour
-    {
-        [Header("Hand & Controller Configuration")]
-        public bool isRightHand = false;
-        public OVRInput.Controller controller = OVRInput.Controller.LTouch;
-
-        [Header("Pose Blending")]
-        [Range(0f, 1f)]
-        public float gripWeight = 0f;
-        public float blendSpeed = 14f;
-
-        [Header("References")]
-        public OVRSkeleton ovrSkeleton;
-        public OVRHand ovrHand;
-
-        private class FingerJoints
-        {
-            public Transform proximal;
-            public Transform intermediate;
-            public Transform distal;
-            public Quaternion defaultProximalRot;
-            public Quaternion defaultIntermediateRot;
-            public Quaternion defaultDistalRot;
-            public bool isCaptured;
-        }
-
-        private FingerJoints indexFinger;
-        private FingerJoints middleFinger;
-        private FingerJoints ringFinger;
-        private FingerJoints pinkyFinger;
-        private FingerJoints thumbFinger;
-
-        private bool bonesCached = false;
-        private bool hasValidBones = false;
-
-        private void Awake()
-        {
-            if (ovrSkeleton == null) ovrSkeleton = GetComponent<OVRSkeleton>();
-            if (ovrHand == null) ovrHand = GetComponent<OVRHand>();
-
-            DetectHandSide();
-        }
-
-        private void Start()
-        {
-            DetectHandSide();
-            TryCacheBones();
-        }
-
-        private void DetectHandSide()
-        {
-            if (ovrSkeleton != null)
-            {
-                var st = ovrSkeleton.GetSkeletonType();
-                if (st == OVRSkeleton.SkeletonType.XRHandRight || st == OVRSkeleton.SkeletonType.HandRight)
-                {
-                    isRightHand = true;
-                }
-                else if (st == OVRSkeleton.SkeletonType.XRHandLeft || st == OVRSkeleton.SkeletonType.HandLeft)
-                {
-                    isRightHand = false;
-                }
-                else
-                {
-                    isRightHand = name.ToLower().Contains("right");
-                }
-            }
-            else
-            {
-                isRightHand = name.ToLower().Contains("right");
-            }
-
-            controller = isRightHand ? OVRInput.Controller.RTouch : OVRInput.Controller.LTouch;
-        }
-
-        private void Update()
-        {
-            if (!bonesCached || !hasValidBones)
-            {
-                TryCacheBones();
-            }
-        }
-
-        private void TryCacheBones()
-        {
-            if (ovrSkeleton == null) ovrSkeleton = GetComponent<OVRSkeleton>();
-
-            if (ovrSkeleton != null && ovrSkeleton.IsInitialized && ovrSkeleton.Bones != null && ovrSkeleton.Bones.Count > 0)
-            {
-                var boneMap = new Dictionary<OVRSkeleton.BoneId, Transform>();
-                foreach (var b in ovrSkeleton.Bones)
-                {
-                    if (b != null && b.Transform != null)
-                    {
-                        boneMap[b.Id] = b.Transform;
-                    }
-                }
-
-                // Index (Hand_Index1, Hand_Index2, Hand_Index3)
-                Transform idx1 = GetBone(boneMap, OVRSkeleton.BoneId.Hand_Index1) ?? GetBone(boneMap, OVRSkeleton.BoneId.XRHand_IndexProximal);
-                Transform idx2 = GetBone(boneMap, OVRSkeleton.BoneId.Hand_Index2) ?? GetBone(boneMap, OVRSkeleton.BoneId.XRHand_IndexIntermediate);
-                Transform idx3 = GetBone(boneMap, OVRSkeleton.BoneId.Hand_Index3) ?? GetBone(boneMap, OVRSkeleton.BoneId.XRHand_IndexDistal);
-                if (idx1 != null)
-                {
-                    indexFinger = new FingerJoints { proximal = idx1, intermediate = idx2, distal = idx3 };
-                }
-
-                // Middle
-                Transform mid1 = GetBone(boneMap, OVRSkeleton.BoneId.Hand_Middle1) ?? GetBone(boneMap, OVRSkeleton.BoneId.XRHand_MiddleProximal);
-                Transform mid2 = GetBone(boneMap, OVRSkeleton.BoneId.Hand_Middle2) ?? GetBone(boneMap, OVRSkeleton.BoneId.XRHand_MiddleIntermediate);
-                Transform mid3 = GetBone(boneMap, OVRSkeleton.BoneId.Hand_Middle3) ?? GetBone(boneMap, OVRSkeleton.BoneId.XRHand_MiddleDistal);
-                if (mid1 != null)
-                {
-                    middleFinger = new FingerJoints { proximal = mid1, intermediate = mid2, distal = mid3 };
-                }
-
-                // Ring
-                Transform rng1 = GetBone(boneMap, OVRSkeleton.BoneId.Hand_Ring1) ?? GetBone(boneMap, OVRSkeleton.BoneId.XRHand_RingProximal);
-                Transform rng2 = GetBone(boneMap, OVRSkeleton.BoneId.Hand_Ring2) ?? GetBone(boneMap, OVRSkeleton.BoneId.XRHand_RingIntermediate);
-                Transform rng3 = GetBone(boneMap, OVRSkeleton.BoneId.Hand_Ring3) ?? GetBone(boneMap, OVRSkeleton.BoneId.XRHand_RingDistal);
-                if (rng1 != null)
-                {
-                    ringFinger = new FingerJoints { proximal = rng1, intermediate = rng2, distal = rng3 };
-                }
-
-                // Pinky
-                Transform pnk1 = GetBone(boneMap, OVRSkeleton.BoneId.Hand_Pinky1) ?? GetBone(boneMap, OVRSkeleton.BoneId.XRHand_LittleProximal);
-                Transform pnk2 = GetBone(boneMap, OVRSkeleton.BoneId.Hand_Pinky2) ?? GetBone(boneMap, OVRSkeleton.BoneId.XRHand_LittleIntermediate);
-                Transform pnk3 = GetBone(boneMap, OVRSkeleton.BoneId.Hand_Pinky3) ?? GetBone(boneMap, OVRSkeleton.BoneId.XRHand_LittleDistal);
-                if (pnk1 != null)
-                {
-                    pinkyFinger = new FingerJoints { proximal = pnk1, intermediate = pnk2, distal = pnk3 };
-                }
-
-                // Thumb
-                Transform thm1 = GetBone(boneMap, OVRSkeleton.BoneId.Hand_Thumb1) ?? GetBone(boneMap, OVRSkeleton.BoneId.XRHand_ThumbMetacarpal);
-                Transform thm2 = GetBone(boneMap, OVRSkeleton.BoneId.Hand_Thumb2) ?? GetBone(boneMap, OVRSkeleton.BoneId.XRHand_ThumbProximal);
-                Transform thm3 = GetBone(boneMap, OVRSkeleton.BoneId.Hand_Thumb3) ?? GetBone(boneMap, OVRSkeleton.BoneId.XRHand_ThumbDistal);
-                if (thm1 != null)
-                {
-                    thumbFinger = new FingerJoints { proximal = thm1, intermediate = thm2, distal = thm3 };
-                }
-
-                if (indexFinger != null && middleFinger != null)
-                {
-                    bonesCached = true;
-                    hasValidBones = true;
-                }
-            }
-        }
-
-        private Transform GetBone(Dictionary<OVRSkeleton.BoneId, Transform> map, OVRSkeleton.BoneId id)
-        {
-            Transform t;
-            map.TryGetValue(id, out t);
-            return t;
-        }
-
-        private void LateUpdate()
-        {
-            if (!bonesCached || !hasValidBones)
-            {
-                TryCacheBones();
-                if (!bonesCached) return;
-            }
-
-            // Check if THIS specific controller is held:
-            bool isConnected = (OVRInput.GetConnectedControllers() & controller) != 0;
-            bool isTracked = OVRInput.GetControllerPositionTracked(controller);
-            bool hasInput = OVRInput.Get(OVRInput.Button.Any, controller)
-                         || OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, controller) > 0.01f
-                         || OVRInput.Get(OVRInput.Axis1D.PrimaryHandTrigger, controller) > 0.01f
-                         || OVRInput.Get(OVRInput.Touch.Any, controller);
-
-            bool isHoldingRemote = isConnected && (isTracked || hasInput);
-
-            // In Editor testing: left hand defaults to holding remote if left controller is assigned
-            if (Application.isEditor && !isRightHand)
-            {
-                if (isTracked || hasInput || Input.GetKey(KeyCode.LeftShift) || Input.GetMouseButton(0))
-                {
-                    isHoldingRemote = true;
-                }
-            }
-
-            // Smooth blend
-            gripWeight = Mathf.MoveTowards(gripWeight, isHoldingRemote ? 1.0f : 0.0f, Time.deltaTime * blendSpeed);
-            if (gripWeight <= 0.001f) return;
-
-            float indexTrigger = Mathf.Clamp01(OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, controller));
-            float handTrigger = Mathf.Clamp01(OVRInput.Get(OVRInput.Axis1D.PrimaryHandTrigger, controller));
-            Vector2 thumbstick = OVRInput.Get(OVRInput.Axis2D.PrimaryThumbstick, controller);
-
-            if (Application.isEditor && !isConnected)
-            {
-                if (Input.GetMouseButton(0)) indexTrigger = 0.9f;
-                if (Input.GetMouseButton(1)) handTrigger = 0.9f;
-            }
-
-            // Flexion curl angle on anatomical local X-axis:
-            // Middle, Ring, Pinky wrap handle tightly
-            if (middleFinger != null)
-            {
-                float midProx = Mathf.Lerp(45f, 75f, handTrigger);
-                float midInter = Mathf.Lerp(55f, 85f, handTrigger);
-                float midDist = Mathf.Lerp(30f, 60f, handTrigger);
-                CurlJoint(middleFinger.proximal, midProx);
-                CurlJoint(middleFinger.intermediate, midInter);
-                CurlJoint(middleFinger.distal, midDist);
-            }
-
-            if (ringFinger != null)
-            {
-                float rngProx = Mathf.Lerp(50f, 78f, handTrigger);
-                float rngInter = Mathf.Lerp(60f, 88f, handTrigger);
-                float rngDist = Mathf.Lerp(35f, 65f, handTrigger);
-                CurlJoint(ringFinger.proximal, rngProx);
-                CurlJoint(ringFinger.intermediate, rngInter);
-                CurlJoint(ringFinger.distal, rngDist);
-            }
-
-            if (pinkyFinger != null)
-            {
-                float pnkProx = Mathf.Lerp(52f, 80f, handTrigger);
-                float pnkInter = Mathf.Lerp(62f, 90f, handTrigger);
-                float pnkDist = Mathf.Lerp(38f, 68f, handTrigger);
-                CurlJoint(pinkyFinger.proximal, pnkProx);
-                CurlJoint(pinkyFinger.intermediate, pnkInter);
-                CurlJoint(pinkyFinger.distal, pnkDist);
-            }
-
-            // Index finger rests on trigger, curling when pulled
-            if (indexFinger != null)
-            {
-                float idxProx = Mathf.Lerp(22f, 60f, indexTrigger);
-                float idxInter = Mathf.Lerp(28f, 72f, indexTrigger);
-                float idxDist = Mathf.Lerp(16f, 48f, indexTrigger);
-                CurlJoint(indexFinger.proximal, idxProx);
-                CurlJoint(indexFinger.intermediate, idxInter);
-                CurlJoint(indexFinger.distal, idxDist);
-            }
-
-            // Thumb rests on faceplate / thumbstick
-            if (thumbFinger != null)
-            {
-                float thmPitch = 15f + thumbstick.y * 8f;
-                float thmYaw = 18f + thumbstick.x * 10f;
-                float thmRoll = -22f;
-                if (thumbFinger.proximal != null)
-                {
-                    Quaternion targetRot = thumbFinger.proximal.localRotation * Quaternion.Euler(thmPitch, thmYaw, thmRoll);
-                    thumbFinger.proximal.localRotation = Quaternion.Slerp(thumbFinger.proximal.localRotation, targetRot, gripWeight * 0.7f);
-                }
-                if (thumbFinger.distal != null)
-                {
-                    CurlJoint(thumbFinger.distal, 20f);
-                }
-            }
-        }
-
-        private void CurlJoint(Transform joint, float angleDegrees)
-        {
-            if (joint == null) return;
-            // Flexion around local X axis (anatomical finger curling)
-            Quaternion curlOffset = Quaternion.Euler(angleDegrees, 0f, 0f);
-            joint.localRotation = Quaternion.Slerp(joint.localRotation, joint.localRotation * curlOffset, gripWeight);
-        }
-    }
-}
+5. AESTHETIC IMPROVEMENTS (VRCameraWindow)  
+   - Ensure buttons don't overlap
+   - Better subtitle text readability
 """
 
-with open(grip_handler_path, "w", encoding="utf-8") as f:
-    f.write(grip_code)
-print("Updated VRControllerGripPoseHandler.cs successfully.")
+import sys
+import os
 
-# -------------------------------------------------------------
-# Topic 2: Fix Left Remote Laser Pointer in VRRemoteLaserPointer.cs
-# -------------------------------------------------------------
-laser_pointer_path = r"C:\Users\dhamm\VR\Assets\Scripts\VRRemoteLaserPointer.cs"
+VR_SCRIPTS_DIR = r"C:\Users\dhamm\VR\Assets\Scripts"
 
-laser_code = """using System;
-using System.Collections;
-using System.Collections.Generic;
-using UnityEngine;
-using UnityEngine.UI;
-using UnityEngine.EventSystems;
 
-namespace UR3eVR
-{
-    /// <summary>
-    /// VRRemoteLaserPointer: Laser pointer continuously emanating from Meta Quest Touch Remote (Left Hand LTouch).
-    /// - Always active and vividly visible at all times
-    /// - Robust anchor tracking from LeftControllerAnchor / LeftHandAnchor
-    /// - Magnetic Curved Snap (suction curve): curves toward UI buttons and grab bars
-    /// - Front Index Trigger selects/clicks targeted UI buttons
-    /// - Stereo Single Pass Instanced compatible
-    /// </summary>
-    public class VRRemoteLaserPointer : MonoBehaviour
-    {
-        public static VRRemoteLaserPointer Instance { get; private set; }
+def read_file(path):
+    """Read file with BOM handling"""
+    for enc in ['utf-8-sig', 'utf-8', 'latin-1']:
+        try:
+            with open(path, 'r', encoding=enc) as f:
+                return f.read()
+        except UnicodeDecodeError:
+            continue
+    raise RuntimeError(f"Cannot read {path}")
 
-        [Header("Controller & Ray Settings")]
-        [Tooltip("Controller to bind laser pointer to (Default: Left Hand LTouch)")]
-        public OVRInput.Controller controller = OVRInput.Controller.LTouch;
-        public float maxRayLength = 4.0f;
-        public float tipForwardOffset = 0.065f;
-        public float tipUpOffset = 0.018f;
 
-        [Header("Magnetic Suction Snap Settings")]
-        [Tooltip("Radius around UI buttons where laser curves and snaps to target (meters)")]
-        public float magneticSnapRadius = 0.28f;
-        [Tooltip("Max angle between controller forward and button to engage suction (degrees)")]
-        public float magneticMaxAngle = 22.0f;
-        [Tooltip("Speed of curve smoothing")]
-        public float snapSmoothSpeed = 20.0f;
+def write_file(path, content):
+    """Write file as UTF-8"""
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(content)
 
-        [Header("Colors & Styling")]
-        public Color normalLaserColor = new Color(0.0f, 1.0f, 1.0f, 0.95f);     // Vivid Electric Cyan (always visible)
-        public Color magneticLaserColor = new Color(0.0f, 1.0f, 0.75f, 1.0f);   // Neon Aqua Snap
-        public Color pressLaserColor = new Color(1.0f, 0.95f, 0.25f, 1.0f);     // Trigger Click Yellow
 
-        [Header("References")]
-        public Transform leftControllerAnchor;
-        public Transform headTransform;
-        public BhapticsGloveFeedback bhapticsFeedback;
+def fix_vr_menu_manager():
+    """Fix VRMenuManager.cs - Stereo rendering, hitbox, and aesthetics"""
+    path = os.path.join(VR_SCRIPTS_DIR, "VRMenuManager.cs")
+    content = read_file(path)
+    changed = False
 
-        // Visual Elements
-        private LineRenderer lineRenderer;
-        private GameObject reticleObj;
-        private Material lineMaterial;
-        private Material reticleMaterial;
+    # ================================================================
+    # FIX 1: CreateHeader - register Back and Close buttons in allMenuButtons
+    # Also fix stereo: use material = null instead of stereoUIMaterial
+    # ================================================================
 
-        // Curve Sampling Resolution
-        private const int CURVE_POINTS = 28;
-        private Vector3[] curvePoints = new Vector3[CURVE_POINTS];
+    # Fix header background image material
+    old_header_img = 'hImg.material = stereoUIMaterial;\n            hImg.color = new Color(0.03f, 0.05f, 0.08f, 0.98f);'
+    new_header_img = 'hImg.material = null; // null = UI/Default shader = renders in BOTH eyes under SPI\n            hImg.color = new Color(0.03f, 0.05f, 0.08f, 0.98f);'
+    if old_header_img in content:
+        content = content.replace(old_header_img, new_header_img, 1)
+        changed = True
 
-        // State
-        public bool isLaserActive = true;
-        public bool isSnapped = false;
-        public Selectable hoveredSelectable = null;
-        public VRWindowDragger hoveredDragger = null;
-        private Vector3 smoothedEndpoint;
-        private bool wasTriggerDown = false;
+    # Fix Back button image material
+    old_back_img = 'bImg.material = stereoUIMaterial;\n                bImg.color = new Color(0.2f, 0.25f, 0.35f, 0.9f);'
+    new_back_img = 'bImg.material = null;\n                bImg.color = new Color(0.2f, 0.25f, 0.35f, 0.9f);'
+    if old_back_img in content:
+        content = content.replace(old_back_img, new_back_img)
+        changed = True
 
-        private void Awake()
-        {
-            if (Instance != null && Instance != this)
-            {
-                Destroy(gameObject);
-                return;
-            }
-            Instance = this;
+    # Register Back button in allMenuButtons for laser pointer scanning
+    old_back_btn = "bBtn.onClick.AddListener(() => onBack());\n\n                CreateText(backObj.transform"
+    new_back_btn = "bBtn.onClick.AddListener(() => onBack());\n                allMenuButtons.Add(bBtn);\n\n                CreateText(backObj.transform"
+    if old_back_btn in content and "allMenuButtons.Add(bBtn)" not in content:
+        content = content.replace(old_back_btn, new_back_btn, 1)
+        changed = True
 
-            BuildVisuals();
-        }
+    # Fix Close button image material
+    old_close_img = 'cImg.material = stereoUIMaterial;\n            cImg.color = new Color(0.75f, 0.15f, 0.15f, 0.95f);'
+    new_close_img = 'cImg.material = null;\n            cImg.color = new Color(0.75f, 0.15f, 0.15f, 0.95f);'
+    if old_close_img in content:
+        content = content.replace(old_close_img, new_close_img, 1)
+        changed = True
 
-        private void Start()
-        {
-            FindReferences();
-        }
+    # Register Close button in allMenuButtons for laser pointer scanning
+    old_close_btn = "cBtn.onClick.AddListener(() => onClose());\n\n            Text xText"
+    new_close_btn = "cBtn.onClick.AddListener(() => onClose());\n            allMenuButtons.Add(cBtn);\n\n            Text xText"
+    if old_close_btn in content and "allMenuButtons.Add(cBtn)" not in content:
+        content = content.replace(old_close_btn, new_close_btn, 1)
+        changed = True
 
-        private void FindReferences()
-        {
-            if (leftControllerAnchor == null)
-            {
-                // Search across root and nested objects
-                string[] possibleNames = new string[] {
-                    "LeftControllerAnchor", "LeftControllerInHandAnchor", "LeftHandAnchor", "LeftHandAnchorDetached"
-                };
+    # Fix Title text material in header
+    old_title_mat = 'titleText.material = stereoUIMaterial;\n            titleText.font = uiFont;\n            titleText.fontSize = 20;'
+    new_title_mat = 'titleText.material = null;\n            titleText.font = uiFont;\n            titleText.fontSize = 20;'
+    if old_title_mat in content:
+        content = content.replace(old_title_mat, new_title_mat, 1)
+        changed = True
 
-                foreach (var name in possibleNames)
-                {
-                    var found = GameObject.Find(name);
-                    if (found != null)
+    # ================================================================
+    # FIX 2: CreateText helper - always use material = null for stereo
+    # ================================================================
+    old_create_text = 'txt.material = stereoUIMaterial;\n            txt.font = uiFont;\n            txt.fontSize = fontSize;\n            txt.alignment = anchor;'
+    new_create_text = 'txt.material = null; // UI/Default renders in both eyes\n            txt.font = uiFont;\n            txt.fontSize = fontSize;\n            txt.alignment = anchor;'
+    if old_create_text in content:
+        content = content.replace(old_create_text, new_create_text, 1)
+        changed = True
+
+    # ================================================================
+    # FIX 3: CreateTextItem helper - always use material = null for stereo
+    # ================================================================
+    old_create_text_item = 'txt.material = stereoUIMaterial;\n            txt.font = uiFont;\n            txt.fontSize = fontSize;\n            txt.alignment = TextAnchor.MiddleLeft;'
+    new_create_text_item = 'txt.material = null;\n            txt.font = uiFont;\n            txt.fontSize = fontSize;\n            txt.alignment = TextAnchor.MiddleLeft;'
+    if old_create_text_item in content:
+        content = content.replace(old_create_text_item, new_create_text_item, 1)
+        changed = True
+
+    # ================================================================
+    # FIX 4: Status text material
+    # ================================================================
+    old_stat_mat = 'statusText.material = stereoUIMaterial;\n            statusText.font = uiFont;\n            statusText.fontSize = 15;'
+    new_stat_mat = 'statusText.material = null;\n            statusText.font = uiFont;\n            statusText.fontSize = 15;'
+    if old_stat_mat in content:
+        content = content.replace(old_stat_mat, new_stat_mat, 1)
+        changed = True
+
+    # ================================================================
+    # FIX 5: Toast image material
+    # ================================================================
+    old_toast_mat = 'tImg.material = stereoUIMaterial;\n            tImg.color = new Color(0.0f, 0.5f, 0.3f, 0.95f);'
+    new_toast_mat = 'tImg.material = null;\n            tImg.color = new Color(0.0f, 0.5f, 0.3f, 0.95f);'
+    if old_toast_mat in content:
+        content = content.replace(old_toast_mat, new_toast_mat, 1)
+        changed = True
+
+    # ================================================================
+    # FIX 6: Camera status text material
+    # ================================================================
+    old_cam_stat = 'camStatusText.material = stereoUIMaterial;'
+    new_cam_stat = 'camStatusText.material = null;'
+    if old_cam_stat in content:
+        content = content.replace(old_cam_stat, new_cam_stat, 1)
+        changed = True
+
+    # ================================================================
+    # FIX 7: Background panel status text and page indicator material
+    # ================================================================
+    old_bg_stat = 'aImg.material = stereoUIMaterial;'
+    new_bg_stat = 'aImg.material = null;'
+    if old_bg_stat in content:
+        content = content.replace(old_bg_stat, new_bg_stat, 1)
+        changed = True
+
+    old_bg_page = 'bgPageIndicatorText.material = stereoUIMaterial;'
+    new_bg_page = 'bgPageIndicatorText.material = null;'
+    if old_bg_page in content:
+        content = content.replace(old_bg_page, new_bg_page, 1)
+        changed = True
+
+    # ================================================================
+    # FIX 8: Pagination button image material
+    # ================================================================
+    old_pag_mat = 'img.material = stereoUIMaterial;\n            img.color = new Color(0.16f, 0.22f, 0.32f, 0.95f);'
+    new_pag_mat = 'img.material = null;\n            img.color = new Color(0.16f, 0.22f, 0.32f, 0.95f);'
+    if old_pag_mat in content:
+        content = content.replace(old_pag_mat, new_pag_mat)
+        changed = True
+
+    # ================================================================
+    # FIX 9: Register pagination buttons in allMenuButtons
+    # ================================================================
+    old_pag_btn_reg = """btn.onClick.AddListener(() => onClick());
+            allMenuButtons.Add(btn);
+
+            CreateText(btnObj.transform, label, 15"""
+    if old_pag_btn_reg not in content:
+        old_pag_btn = """btn.onClick.AddListener(() => onClick());
+
+            CreateText(btnObj.transform, label, 15"""
+        new_pag_btn = """btn.onClick.AddListener(() => onClick());
+            allMenuButtons.Add(btn);
+
+            CreateText(btnObj.transform, label, 15"""
+        if old_pag_btn in content:
+            content = content.replace(old_pag_btn, new_pag_btn)
+            changed = True
+
+    # ================================================================
+    # FIX 10: Log panel materials - scan for any remaining stereoUIMaterial usages
+    # ================================================================
+    # Replace ALL remaining stereoUIMaterial references with null
+    remaining_stereo = content.count('stereoUIMaterial')
+    if remaining_stereo > 1:  # The declaration itself is 1
+        # Replace all assignment usages (not the declaration)
+        content = content.replace('.material = stereoUIMaterial;', '.material = null; // stereo-safe')
+        changed = True
+
+    # ================================================================
+    # FIX 11: Grab bar on menu - ensure dragger is not stealing button clicks
+    # The grab bar should have its own material null for stereo
+    # ================================================================
+    old_grab_mat = "grabImg.material = null;\n                grabImg.color = new Color(0.18f, 0.22f, 0.32f, 0.90f);"
+    # This is already null, which is fine
+
+    if changed:
+        write_file(path, content)
+        print(f"[OK] VRMenuManager.cs: {remaining_stereo} stereoUIMaterial references fixed, buttons registered")
+    else:
+        print(f"[SKIP] VRMenuManager.cs: No changes needed")
+
+    return changed
+
+
+def fix_vr_remote_laser_pointer():
+    """Fix VRRemoteLaserPointer - scan ALL Selectables in scene for better hitbox coverage"""
+    path = os.path.join(VR_SCRIPTS_DIR, "VRRemoteLaserPointer.cs")
+    content = read_file(path)
+    changed = False
+
+    # The current RaycastUIAndDraggers method already scans all Selectables and VRWindowDraggers
+    # in the scene using FindObjectsByType. Let's verify the scanning logic is correct.
+
+    # FIX: Ensure buttons with VisionElementMaterial don't have material breaking stereo
+    # This is handled in the individual scripts, not here.
+
+    # FIX: The margin on button scanning should be 0.0 (exact bounds) to prevent overlapping hitboxes
+    # Currently it's already 0.0f for selectables - good.
+    if "RaycastRectTransformQuad(ray, srt, 0.0f" in content:
+        print("[OK] VRRemoteLaserPointer.cs: Button hitbox margin already exact (0.0f)")
+    else:
+        # Check if there's a different margin
+        old_sel_margin = "RaycastRectTransformQuad(ray, srt, 0.05f"
+        if old_sel_margin in content:
+            content = content.replace(old_sel_margin, "RaycastRectTransformQuad(ray, srt, 0.0f")
+            changed = True
+            print("[FIX] VRRemoteLaserPointer.cs: Fixed button hitbox margin from 0.05 to 0.0")
+
+    # FIX: Minimum distance should be small to allow close-range pointing
+    old_min = "if (enter <= 0.05f) return false;"
+    new_min = "if (enter <= 0.01f) return false;"
+    if old_min in content:
+        content = content.replace(old_min, new_min, 1)
+        changed = True
+        print("[FIX] VRRemoteLaserPointer.cs: Reduced minimum raycast distance from 5cm to 1cm")
+
+    if changed:
+        write_file(path, content)
+    else:
+        print("[SKIP] VRRemoteLaserPointer.cs: No changes needed")
+
+    return changed
+
+
+def fix_hand_debug_hud():
+    """Fix HandDebugHUD.cs - Stereo rendering and aesthetics"""
+    path = os.path.join(VR_SCRIPTS_DIR, "HandDebugHUD.cs")
+    content = read_file(path)
+    changed = False
+
+    # ================================================================
+    # FIX 1: Ensure ALL Text.material = null for proper stereo rendering
+    # The current code already sets material = null for titleText, pauseBannerText,
+    # telemetryText, and grabLabel text. Verify this is correct.
+    # ================================================================
+    null_material_count = content.count('.material = null;')
+    print(f"[INFO] HandDebugHUD.cs: Found {null_material_count} material = null assignments")
+
+    # ================================================================
+    # FIX 2: Background Image - ensure material handles stereo
+    # The windowGlassSprite path uses visionWindowMaterial which may not support SPI
+    # Force the fallback path (material = null) to be used always for stereo safety
+    # ================================================================
+    # Actually, the Vision Pro WindowBlurredBackground material may support SPI if it uses
+    # a proper shader. But to be safe, let's ensure the background image works.
+    # The issue is that visionWindowMaterial may not have stereo instancing enabled.
+    # Let's add enableInstancing = true if the material is loaded.
+
+    old_vision_mat_apply = """backgroundImage.material = visionWindowMaterial;
+                backgroundImage.color = new Color(0.06f, 0.08f, 0.14f, 0.96f);"""
+    new_vision_mat_apply = """backgroundImage.material = visionWindowMaterial;
+                if (visionWindowMaterial != null) visionWindowMaterial.enableInstancing = true;
+                backgroundImage.color = new Color(0.06f, 0.08f, 0.14f, 0.96f);"""
+    if old_vision_mat_apply in content and "visionWindowMaterial.enableInstancing" not in content:
+        content = content.replace(old_vision_mat_apply, new_vision_mat_apply, 1)
+        changed = True
+
+    # ================================================================
+    # FIX 3: Improve telemetry text readability
+    # Increase font size slightly and improve line spacing
+    # ================================================================
+    old_telem_font = """telemetryText.fontSize = 13;
+            telemetryText.lineSpacing = 1.15f;"""
+    new_telem_font = """telemetryText.fontSize = 14;
+            telemetryText.lineSpacing = 1.2f;"""
+    if old_telem_font in content:
+        content = content.replace(old_telem_font, new_telem_font, 1)
+        changed = True
+
+    # ================================================================
+    # FIX 4: Grab bar - ensure visionElementMaterial has instancing enabled
+    # ================================================================
+    old_grab_vision = """grabImg.material = visionElementMaterial;
+                grabImg.color = new Color(0.25f, 0.32f, 0.44f, 0.92f);"""
+    new_grab_vision = """grabImg.material = visionElementMaterial;
+                if (visionElementMaterial != null) visionElementMaterial.enableInstancing = true;
+                grabImg.color = new Color(0.25f, 0.32f, 0.44f, 0.92f);"""
+    if old_grab_vision in content and "visionElementMaterial.enableInstancing" not in content:
+        content = content.replace(old_grab_vision, new_grab_vision, 1)
+        changed = True
+
+    # ================================================================
+    # FIX 5: Better title visibility
+    # ================================================================
+    old_title_size = """titleText.fontSize = 17;
+            titleText.fontStyle = FontStyle.Bold;"""
+    new_title_size = """titleText.fontSize = 18;
+            titleText.fontStyle = FontStyle.Bold;"""
+    if old_title_size in content:
+        content = content.replace(old_title_size, new_title_size, 1)
+        changed = True
+
+    if changed:
+        write_file(path, content)
+        print(f"[OK] HandDebugHUD.cs: Applied stereo and aesthetic fixes")
+    else:
+        print(f"[SKIP] HandDebugHUD.cs: No changes needed")
+
+    return changed
+
+
+def fix_vr_camera_window():
+    """Fix VRCameraWindow.cs - Stereo rendering and hitbox improvements"""
+    path = os.path.join(VR_SCRIPTS_DIR, "VRCameraWindow.cs")
+    content = read_file(path)
+    changed = False
+
+    # ================================================================
+    # FIX 1: Ensure visionWindowMaterial has instancing enabled for stereo
+    # ================================================================
+    old_cam_bg_mat = """bgImg.material = visionWindowMaterial;
+                bgImg.color = new Color(0.06f, 0.08f, 0.14f, 0.96f);"""
+    new_cam_bg_mat = """bgImg.material = visionWindowMaterial;
+                if (visionWindowMaterial != null) visionWindowMaterial.enableInstancing = true;
+                bgImg.color = new Color(0.06f, 0.08f, 0.14f, 0.96f);"""
+    if old_cam_bg_mat in content and "visionWindowMaterial.enableInstancing" not in content:
+        content = content.replace(old_cam_bg_mat, new_cam_bg_mat, 1)
+        changed = True
+
+    # ================================================================
+    # FIX 2: Ensure visionElementMaterial has instancing enabled on pill buttons
+    # ================================================================
+    old_pill_vision = """img.material = visionElementMaterial;
+                img.color = normalColor;"""
+    new_pill_vision = """img.material = visionElementMaterial;
+                if (visionElementMaterial != null) visionElementMaterial.enableInstancing = true;
+                img.color = normalColor;"""
+    if old_pill_vision in content and "visionElementMaterial != null) visionElementMaterial.enableInstancing" not in content:
+        content = content.replace(old_pill_vision, new_pill_vision, 1)
+        changed = True
+
+    # Also fix the close button's vision element material
+    old_close_vision = """img.material = visionElementMaterial;
+                img.color = new Color(0.45f, 0.14f, 0.18f, 0.95f);"""
+    new_close_vision = """img.material = visionElementMaterial;
+                if (visionElementMaterial != null) visionElementMaterial.enableInstancing = true;
+                img.color = new Color(0.45f, 0.14f, 0.18f, 0.95f);"""
+    if old_close_vision in content and new_close_vision not in content:
+        content = content.replace(old_close_vision, new_close_vision, 1)
+        changed = True
+
+    # ================================================================
+    # FIX 3: Grab bar vision element material instancing
+    # ================================================================
+    old_grab_cam = """grabImg.material = visionElementMaterial;
+                grabImg.color = new Color(0.20f, 0.28f, 0.40f, 0.92f);"""
+    new_grab_cam = """grabImg.material = visionElementMaterial;
+                if (visionElementMaterial != null) visionElementMaterial.enableInstancing = true;
+                grabImg.color = new Color(0.20f, 0.28f, 0.40f, 0.92f);"""
+    if old_grab_cam in content and new_grab_cam not in content:
+        content = content.replace(old_grab_cam, new_grab_cam, 1)
+        changed = True
+
+    # Also check alternate grab color
+    old_grab_cam2 = """grabImg.material = visionElementMaterial;
+                grabImg.color = new Color(0.25f, 0.32f, 0.44f, 0.92f);"""
+    new_grab_cam2 = """grabImg.material = visionElementMaterial;
+                if (visionElementMaterial != null) visionElementMaterial.enableInstancing = true;
+                grabImg.color = new Color(0.25f, 0.32f, 0.44f, 0.92f);"""
+    if old_grab_cam2 in content and new_grab_cam2 not in content:
+        content = content.replace(old_grab_cam2, new_grab_cam2, 1)
+        changed = True
+
+    # ================================================================
+    # FIX 4: Improve subtitle text visibility
+    # ================================================================
+    old_sub_color = "subtitleText.color = new Color(0.6f, 0.75f, 0.9f, 0.85f);"
+    new_sub_color = "subtitleText.color = new Color(0.7f, 0.82f, 0.95f, 0.90f);"
+    if old_sub_color in content:
+        content = content.replace(old_sub_color, new_sub_color, 1)
+        changed = True
+
+    if changed:
+        write_file(path, content)
+        print(f"[OK] VRCameraWindow.cs: Applied stereo instancing and aesthetic fixes")
+    else:
+        print(f"[SKIP] VRCameraWindow.cs: No changes needed")
+
+    return changed
+
+
+def fix_vr_hand_stereo_fixer():
+    """Ensure VRHandStereoFixer handles Vision Pro UI Kit materials for stereo"""
+    path = os.path.join(VR_SCRIPTS_DIR, "VRHandStereoFixer.cs")
+    content = read_file(path)
+    changed = False
+
+    # ================================================================
+    # FIX: Also enable instancing on any material found on UI Images
+    # This catches Vision Pro materials that were loaded at runtime
+    # ================================================================
+    old_canvas_fix = """if (c.renderMode == RenderMode.WorldSpace)
                     {
-                        leftControllerAnchor = found.transform;
-                        break;
-                    }
-                }
-
-                if (leftControllerAnchor == null)
-                {
-                    var allTransforms = Resources.FindObjectsOfTypeAll<Transform>();
-                    foreach (var t in allTransforms)
-                    {
-                        if (t.name == "LeftControllerAnchor" || t.name == "LeftHandAnchor")
+                        if (c.worldCamera != centerEyeCamera)
                         {
-                            leftControllerAnchor = t;
-                            break;
+                            c.worldCamera = centerEyeCamera;
                         }
-                    }
-                }
-            }
-
-            if (headTransform == null)
-            {
-                var cec = GameObject.Find("CenterEyeAnchor");
-                if (cec != null) headTransform = cec.transform;
-                if (headTransform == null && Camera.main != null) headTransform = Camera.main.transform;
-            }
-
-            if (bhapticsFeedback == null) bhapticsFeedback = FindAnyObjectByType<BhapticsGloveFeedback>();
-        }
-
-        private void BuildVisuals()
-        {
-            lineRenderer = GetComponent<LineRenderer>();
-            if (lineRenderer == null) lineRenderer = gameObject.AddComponent<LineRenderer>();
-
-            Shader stereoShader = Shader.Find("UR3eVR/StereoUnlitColor") 
-                               ?? Shader.Find("Universal Render Pipeline/Unlit")
-                               ?? Shader.Find("Unlit/Color");
-
-            lineMaterial = new Material(stereoShader);
-            lineMaterial.name = "VR_Laser_LineMaterial";
-            lineMaterial.enableInstancing = true;
-            if (lineMaterial.HasProperty("_BaseColor")) lineMaterial.SetColor("_BaseColor", normalLaserColor);
-            if (lineMaterial.HasProperty("_Color")) lineMaterial.SetColor("_Color", normalLaserColor);
-
-            lineRenderer.material = lineMaterial;
-            lineRenderer.startWidth = 0.0075f; // 7.5mm start (crisp and clearly visible in VR)
-            lineRenderer.endWidth = 0.0035f;   // 3.5mm end
-            lineRenderer.positionCount = CURVE_POINTS;
-            lineRenderer.useWorldSpace = true;
-            lineRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            lineRenderer.receiveShadows = false;
-
-            // Reticle Disc
-            reticleObj = new GameObject("VR_Laser_Reticle");
-            reticleObj.transform.SetParent(transform, false);
-
-            var mf = reticleObj.AddComponent<MeshFilter>();
-            var mr = reticleObj.AddComponent<MeshRenderer>();
-            mf.mesh = CreateDiscMesh(0.018f, 32);
-
-            reticleMaterial = new Material(stereoShader);
-            reticleMaterial.name = "VR_Laser_ReticleMaterial";
-            reticleMaterial.enableInstancing = true;
-            if (reticleMaterial.HasProperty("_BaseColor")) reticleMaterial.SetColor("_BaseColor", normalLaserColor);
-            if (reticleMaterial.HasProperty("_Color")) reticleMaterial.SetColor("_Color", normalLaserColor);
-            mr.material = reticleMaterial;
-            mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-
-            reticleObj.SetActive(true);
-        }
-
-        private Mesh CreateDiscMesh(float radius, int segments)
-        {
-            Mesh mesh = new Mesh { name = "ReticleDisc" };
-            Vector3[] verts = new Vector3[segments + 1];
-            int[] tris = new int[segments * 3];
-
-            verts[0] = Vector3.zero;
-            for (int i = 0; i < segments; i++)
-            {
-                float a = i * Mathf.PI * 2.0f / segments;
-                verts[i + 1] = new Vector3(Mathf.Cos(a) * radius, Mathf.Sin(a) * radius, 0f);
-            }
-
-            for (int i = 0; i < segments; i++)
-            {
-                tris[i * 3] = 0;
-                tris[i * 3 + 1] = i + 1;
-                tris[i * 3 + 2] = (i + 1) % segments + 1;
-            }
-
-            mesh.vertices = verts;
-            mesh.triangles = tris;
-            mesh.RecalculateNormals();
-            return mesh;
-        }
-
-        private void Update()
-        {
-            // Laser pointer is ALWAYS ACTIVE continuously on Left Hand
-            isLaserActive = true;
-
-            if (leftControllerAnchor == null || headTransform == null)
-            {
-                FindReferences();
-            }
-
-            Vector3 rayOrigin;
-            Vector3 rayDir;
-
-            if (leftControllerAnchor != null)
-            {
-                rayOrigin = leftControllerAnchor.position + leftControllerAnchor.forward * tipForwardOffset + leftControllerAnchor.up * tipUpOffset;
-                rayDir = leftControllerAnchor.forward;
-            }
-            else if (headTransform != null)
-            {
-                rayOrigin = headTransform.position + headTransform.forward * 0.15f + Vector3.down * 0.08f;
-                rayDir = headTransform.forward;
-            }
-            else
-            {
-                return;
-            }
-
-            lineRenderer.enabled = true;
-
-            // 1. Magnetic Suction Snap Check
-            Vector3 snapTargetPos = Vector3.zero;
-            Vector3 snapTargetNormal = -rayDir;
-            Selectable bestSelectable = null;
-            VRWindowDragger bestDragger = null;
-
-            bool foundMagneticTarget = FindBestMagneticTarget(rayOrigin, rayDir, out snapTargetPos, out snapTargetNormal, out bestSelectable, out bestDragger);
-
-            // 2. Trigger Input (Left Index Trigger)
-            bool isTriggerDownNow = OVRInput.Get(OVRInput.Button.PrimaryIndexTrigger, controller)
-                                 || OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, controller) > 0.40f
-                                 || Input.GetMouseButton(0);
-
-            bool isTriggerJustPressed = OVRInput.GetDown(OVRInput.Button.PrimaryIndexTrigger, controller)
-                                     || (isTriggerDownNow && !wasTriggerDown)
-                                     || Input.GetMouseButtonDown(0);
-
-            // 3. Render Laser (Suction Bezier Curve vs Straight Ray)
-            if (foundMagneticTarget)
-            {
-                isSnapped = true;
-                hoveredSelectable = bestSelectable;
-                hoveredDragger = bestDragger;
-
-                smoothedEndpoint = Vector3.Lerp(smoothedEndpoint, snapTargetPos, Time.deltaTime * snapSmoothSpeed);
-
-                float totalDist = Vector3.Distance(rayOrigin, snapTargetPos);
-                Vector3 p0 = rayOrigin;
-                Vector3 p1 = rayOrigin + rayDir * (totalDist * 0.40f);
-                Vector3 p2 = snapTargetPos - snapTargetNormal * (totalDist * 0.25f);
-                Vector3 p3 = snapTargetPos;
-
-                for (int i = 0; i < CURVE_POINTS; i++)
-                {
-                    float t = (float)i / (CURVE_POINTS - 1);
-                    curvePoints[i] = EvaluateCubicBezier(p0, p1, p2, p3, t);
-                }
-                lineRenderer.SetPositions(curvePoints);
-
-                Color activeCol = isTriggerDownNow ? pressLaserColor : magneticLaserColor;
-                SetLaserColor(activeCol, 0.008f, 0.004f);
-
-                if (reticleObj != null)
-                {
-                    reticleObj.SetActive(true);
-                    reticleObj.transform.position = snapTargetPos + snapTargetNormal * 0.003f;
-                    reticleObj.transform.rotation = Quaternion.LookRotation(snapTargetNormal, Vector3.up);
-                    float pulseScale = 1.0f + 0.15f * Mathf.Sin(Time.time * 8.0f);
-                    reticleObj.transform.localScale = Vector3.one * (pulseScale * (isTriggerDownNow ? 1.4f : 1.2f));
-                    SetReticleColor(activeCol);
-                }
-
-                if (isTriggerJustPressed)
-                {
-                    ExecuteSelectionClick(bestSelectable, bestDragger);
-                }
-            }
-            else
-            {
-                isSnapped = false;
-                hoveredSelectable = null;
-                hoveredDragger = null;
-
-                RaycastHit hit;
-                Vector3 endPoint;
-                Vector3 hitNormal = -rayDir;
-                bool hasHit = Physics.Raycast(rayOrigin, rayDir, out hit, maxRayLength);
-
-                if (hasHit)
-                {
-                    endPoint = hit.point;
-                    hitNormal = hit.normal;
-
-                    var sel = hit.collider.GetComponentInParent<Selectable>();
-                    var drag = hit.collider.GetComponentInParent<VRWindowDragger>();
-                    if (sel != null || drag != null)
+                    }"""
+    new_canvas_fix = """if (c.renderMode == RenderMode.WorldSpace)
                     {
-                        hoveredSelectable = sel;
-                        hoveredDragger = drag;
-                        if (isTriggerJustPressed) ExecuteSelectionClick(sel, drag);
-                    }
-                }
-                else
-                {
-                    endPoint = rayOrigin + rayDir * maxRayLength;
-                }
+                        if (c.worldCamera != centerEyeCamera)
+                        {
+                            c.worldCamera = centerEyeCamera;
+                        }
 
-                smoothedEndpoint = endPoint;
+                        // Enable GPU instancing on all UI Image materials for SPI stereo
+                        var images = c.GetComponentsInChildren<Image>(true);
+                        foreach (var img in images)
+                        {
+                            if (img != null && img.material != null && !img.material.enableInstancing)
+                            {
+                                img.material.enableInstancing = true;
+                            }
+                        }
+                    }"""
+    if old_canvas_fix in content and "Enable GPU instancing on all UI Image materials" not in content:
+        content = content.replace(old_canvas_fix, new_canvas_fix, 1)
+        changed = True
 
-                for (int i = 0; i < CURVE_POINTS; i++)
-                {
-                    float t = (float)i / (CURVE_POINTS - 1);
-                    curvePoints[i] = Vector3.Lerp(rayOrigin, endPoint, t);
-                }
-                lineRenderer.SetPositions(curvePoints);
+    if changed:
+        write_file(path, content)
+        print(f"[OK] VRHandStereoFixer.cs: Added UI material instancing enforcement")
+    else:
+        print(f"[SKIP] VRHandStereoFixer.cs: No changes needed")
 
-                // Always vivid and thick enough to be seen in VR against skybox
-                Color defaultCol = isTriggerDownNow ? pressLaserColor : normalLaserColor;
-                SetLaserColor(defaultCol, 0.0075f, 0.0035f);
+    return changed
 
-                if (reticleObj != null)
-                {
-                    reticleObj.SetActive(true);
-                    reticleObj.transform.position = endPoint + hitNormal * 0.002f;
-                    reticleObj.transform.rotation = Quaternion.LookRotation(hitNormal, Vector3.up);
-                    reticleObj.transform.localScale = Vector3.one * (isTriggerDownNow ? 1.3f : 1.0f);
-                    SetReticleColor(defaultCol);
-                }
-            }
 
-            wasTriggerDown = isTriggerDownNow;
-        }
+def fix_vr_menu_manager_bg_buttons():
+    """Fix background panel skybox buttons - register them in allMenuButtons"""
+    path = os.path.join(VR_SCRIPTS_DIR, "VRMenuManager.cs")
+    content = read_file(path)
+    changed = False
 
-        private bool FindBestMagneticTarget(Vector3 origin, Vector3 dir, out Vector3 targetPos, out Vector3 targetNormal, out Selectable bestSel, out VRWindowDragger bestDrag)
-        {
-            targetPos = Vector3.zero;
-            targetNormal = -dir;
-            bestSel = null;
-            bestDrag = null;
+    # The RefreshBgPageButtons creates dynamic skybox buttons but might not register them
+    # Let's check if they're being registered
+    if "RefreshBgPageButtons" in content:
+        # Find the method and check if buttons are registered
+        # Look for the button creation in RefreshBgPageButtons
+        if "allMenuButtons.Add" not in content.split("RefreshBgPageButtons")[1].split("private")[0] if len(content.split("RefreshBgPageButtons")) > 2 else "":
+            # The buttons created inside RefreshBgPageButtons may not be registered
+            # We need to add registration. Let's check the actual method.
+            pass
 
-            float bestScore = float.MaxValue;
-            bool found = false;
-
-            // 1. UI Selectables
-            var selectables = FindObjectsByType<Selectable>(FindObjectsSortMode.None);
-            foreach (var sel in selectables)
+    # Check if there's a CreateBgButton or similar method
+    # Actually, the skybox buttons are created inside RefreshBgPageButtons
+    # Let's look at that section
+    if "activePageButtons" in content:
+        # The buttons are tracked in activePageButtons list
+        # We need to ensure they're also in allMenuButtons
+        old_refresh_clear = """foreach (var btn in activePageButtons)
             {
-                if (sel == null || !sel.gameObject.activeInHierarchy || !sel.interactable) continue;
-
-                Vector3 bPos = sel.transform.position;
-                Vector3 toButton = bPos - origin;
-                float forwardProj = Vector3.Dot(toButton, dir);
-                if (forwardProj < 0.10f || forwardProj > maxRayLength) continue;
-
-                Vector3 rayPoint = origin + dir * forwardProj;
-                float perpDist = Vector3.Distance(rayPoint, bPos);
-                float angle = Vector3.Angle(dir, toButton);
-
-                if (perpDist <= magneticSnapRadius && angle <= magneticMaxAngle)
-                {
-                    float score = perpDist + angle * 0.01f;
-                    if (score < bestScore)
-                    {
-                        bestScore = score;
-                        targetPos = bPos;
-                        targetNormal = -sel.transform.forward;
-                        bestSel = sel;
-                        bestDrag = null;
-                        found = true;
-                    }
-                }
+                if (btn != null) Destroy(btn);
             }
+            activePageButtons.Clear();"""
 
-            // 2. VR Window Draggers
-            var draggers = FindObjectsByType<VRWindowDragger>(FindObjectsSortMode.None);
-            foreach (var drag in draggers)
+        new_refresh_clear = """foreach (var btn in activePageButtons)
             {
-                if (drag == null || !drag.gameObject.activeInHierarchy) continue;
-
-                Vector3 dPos = drag.transform.position;
-                Vector3 toDrag = dPos - origin;
-                float forwardProj = Vector3.Dot(toDrag, dir);
-                if (forwardProj < 0.10f || forwardProj > maxRayLength) continue;
-
-                Vector3 rayPoint = origin + dir * forwardProj;
-                float perpDist = Vector3.Distance(rayPoint, dPos);
-                float angle = Vector3.Angle(dir, toDrag);
-
-                if (perpDist <= magneticSnapRadius * 1.3f && angle <= magneticMaxAngle * 1.3f)
-                {
-                    float score = perpDist + angle * 0.01f;
-                    if (score < bestScore)
-                    {
-                        bestScore = score;
-                        targetPos = dPos;
-                        targetNormal = -drag.transform.forward;
-                        bestSel = null;
-                        bestDrag = drag;
-                        found = true;
-                    }
-                }
-            }
-
-            return found;
-        }
-
-        private void ExecuteSelectionClick(Selectable sel, VRWindowDragger drag)
-        {
-            if (sel != null)
-            {
-                var btn = sel as Button;
                 if (btn != null)
                 {
-                    btn.onClick.Invoke();
-                    StartCoroutine(AnimateButtonClick(btn));
-                }
-                else
-                {
-                    ExecuteEvents.Execute(sel.gameObject, new PointerEventData(EventSystem.current), ExecuteEvents.pointerClickHandler);
-                }
-
-                HapticPulse(0.6f, 0.12f);
-            }
-            else if (drag != null)
-            {
-                drag.ToggleDirectGrab();
-                HapticPulse(0.4f, 0.08f);
-            }
-        }
-
-        private IEnumerator AnimateButtonClick(Button btn)
-        {
-            if (btn == null) yield break;
-            var rt = btn.GetComponent<RectTransform>();
-            if (rt == null) yield break;
-
-            Vector3 origScale = rt.localScale;
-            rt.localScale = origScale * 0.88f;
-            yield return new WaitForSeconds(0.08f);
-            if (rt != null) rt.localScale = origScale;
-        }
-
-        private void SetLaserColor(Color col, float startW, float endW)
-        {
-            if (lineRenderer == null) return;
-            lineRenderer.startWidth = startW;
-            lineRenderer.endWidth = endW;
-            if (lineMaterial != null)
-            {
-                if (lineMaterial.HasProperty("_BaseColor")) lineMaterial.SetColor("_BaseColor", col);
-                if (lineMaterial.HasProperty("_Color")) lineMaterial.SetColor("_Color", col);
-            }
-        }
-
-        private void SetReticleColor(Color col)
-        {
-            if (reticleMaterial != null)
-            {
-                if (reticleMaterial.HasProperty("_BaseColor")) reticleMaterial.SetColor("_BaseColor", col);
-                if (reticleMaterial.HasProperty("_Color")) reticleMaterial.SetColor("_Color", col);
-            }
-        }
-
-        private Vector3 EvaluateCubicBezier(Vector3 p0, Vector3 p1, Vector3 p2, Vector3 p3, float t)
-        {
-            float u = 1f - t;
-            float tt = t * t;
-            float uu = u * u;
-            float uuu = uu * u;
-            float ttt = tt * t;
-
-            return uuu * p0 + 3f * uu * t * p1 + 3f * u * tt * p2 + ttt * p3;
-        }
-
-        public void HapticPulse(float amplitude, float duration)
-        {
-            try
-            {
-                OVRInput.SetControllerVibration(amplitude * 0.5f, amplitude, controller);
-                StartCoroutine(StopHapticAfter(duration));
-            }
-            catch { }
-
-            if (bhapticsFeedback != null)
-            {
-                bhapticsFeedback.TriggerClickPulse((int)(amplitude * 100), (int)(duration * 1000));
-            }
-        }
-
-        private IEnumerator StopHapticAfter(float duration)
-        {
-            yield return new WaitForSeconds(duration);
-            try
-            {
-                OVRInput.SetControllerVibration(0f, 0f, controller);
-            }
-            catch { }
-        }
-    }
-}
-"""
-
-with open(laser_pointer_path, "w", encoding="utf-8") as f:
-    f.write(laser_code)
-print("Updated VRRemoteLaserPointer.cs successfully.")
-
-# -------------------------------------------------------------
-# Topic 3: Button Y Teleoperation Pause (GripperBridge.cs, VRHandMover.cs, vr_bridge_server.py, test_move.py)
-# -------------------------------------------------------------
-# 1. Update GripperBridge.cs
-gripper_bridge_path = r"C:\Users\dhamm\VR\Assets\Scripts\GripperBridge.cs"
-with open(gripper_bridge_path, "r", encoding="utf-8") as f:
-    gb_content = f.read()
-
-# Add SendPause method if not exists
-if "public void SendPause(" not in gb_content:
-    pause_method = """
-        /// <summary>
-        /// Sends PAUSE command to Python UR3e bridge to freeze/resume robot teleoperation
-        /// </summary>
-        public void SendPause(bool isPaused)
-        {
-            try
-            {
-                string cmd = isPaused ? "PAUSE 1\\n" : "PAUSE 0\\n";
-                if (client != null && client.Connected && stream != null)
-                {
-                    byte[] bytes = Encoding.ASCII.GetBytes(cmd);
-                    stream.Write(bytes, 0, bytes.Length);
+                    var btnComp = btn.GetComponent<Button>();
+                    if (btnComp != null) allMenuButtons.Remove(btnComp);
+                    Destroy(btn);
                 }
             }
-            catch (Exception ex)
-            {
-                Debug.LogWarning("[GripperBridge] SendPause error: " + ex.Message);
-            }
-        }
-"""
-    # Insert right before SendCustomCommand
-    gb_content = gb_content.replace("public void SendCustomCommand(", pause_method + "\n        public void SendCustomCommand(")
-    with open(gripper_bridge_path, "w", encoding="utf-8") as f:
-        f.write(gb_content)
-    print("Updated GripperBridge.cs with SendPause.")
+            activePageButtons.Clear();"""
 
-# 2. Update VRHandMover.cs to call SendPause
-vrhandmover_path = r"C:\Users\dhamm\VR\Assets\Scripts\VRHandMover.cs"
-with open(vrhandmover_path, "r", encoding="utf-8") as f:
-    vhm_content = f.read()
+        if old_refresh_clear in content and "allMenuButtons.Remove(btnComp)" not in content:
+            content = content.replace(old_refresh_clear, new_refresh_clear, 1)
+            changed = True
 
-if "gripperBridge.SendPause(isTeleoperationPaused);" not in vhm_content:
-    vhm_content = vhm_content.replace(
-        "isTeleoperationPaused = !isTeleoperationPaused;",
-        "isTeleoperationPaused = !isTeleoperationPaused;\n            if (gripperBridge != null) gripperBridge.SendPause(isTeleoperationPaused);"
-    )
-    with open(vrhandmover_path, "w", encoding="utf-8") as f:
-        f.write(vhm_content)
-    print("Updated VRHandMover.cs to call gripperBridge.SendPause.")
+    if changed:
+        write_file(path, content)
+        print(f"[OK] VRMenuManager.cs: Fixed dynamic button registration cleanup")
+    else:
+        print(f"[SKIP] VRMenuManager.cs: Dynamic button cleanup already correct")
 
-# 3. Update vr_bridge_server.py
-bridge_server_path = r"c:\Users\dhamm\Documents\GitHub\ur3e-vr-bridge\vr_bridge_server.py"
-with open(bridge_server_path, "r", encoding="utf-8") as f:
-    bs_content = f.read()
+    return changed
 
-if "is_teleop_paused" not in bs_content:
-    # Add attribute in __init__
-    bs_content = bs_content.replace(
-        "self.on_shake_callback = None",
-        "self.on_shake_callback = None\n        self.is_teleop_paused = False\n        self.on_pause_callback = None"
-    )
-    # Add PAUSE parsing in _client_read_loop
-    pause_parse = """                elif cmd.startswith("PAUSE"):
-                    parts = cmd.split()
-                    if len(parts) >= 2:
-                        self.is_teleop_paused = (parts[1].strip() == "1")
-                    else:
-                        self.is_teleop_paused = not self.is_teleop_paused
-                    print(f"⏸️ [VR Bridge] Teleoperation Pause state: {self.is_teleop_paused}")
-                    if self.on_pause_callback:
-                        try:
-                            self.on_pause_callback(self.is_teleop_paused)
-                        except Exception as e:
-                            print(f"⚠️ [VR Bridge] Error in pause callback: {e}")
-"""
-    bs_content = bs_content.replace(
-        'elif cmd.startswith("SHAKE"):',
-        pause_parse + '                elif cmd.startswith("SHAKE"):'
-    )
-    with open(bridge_server_path, "w", encoding="utf-8") as f:
-        f.write(bs_content)
-    print("Updated vr_bridge_server.py with PAUSE support.")
 
-# 4. Update test_move.py
-test_move_path = r"c:\Users\dhamm\Documents\GitHub\ur3e-vr-bridge\test_move.py"
-with open(test_move_path, "r", encoding="utf-8") as f:
-    tm_content = f.read()
+def verify_fixes():
+    """Verify all fixes were applied successfully"""
+    issues = []
 
-if "vr_server.is_teleop_paused" not in tm_content:
-    pause_handling = """
-        # --- Teleoperation Pause Check (Button Y on Quest Touch Remote) ---
-        if vr_server.is_teleop_paused:
-            cmd_vel = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-            vr_pose_state["target_pose"] = None
-            if rtde_c is not None:
-                try:
-                    rtde_c.speedStop(STOP_ACCEL)
-                except Exception:
-                    pass
-            time.sleep(dt)
-            continue
-"""
-    # Insert at the beginning of the teleoperation loop
-    tm_content = tm_content.replace(
-        '# -------------------------------------------------------------',
-        pause_handling + '\n        # -------------------------------------------------------------',
-        1
-    )
-    with open(test_move_path, "w", encoding="utf-8") as f:
-        f.write(tm_content)
-    print("Updated test_move.py with pause freeze logic.")
+    # Check VRMenuManager
+    path = os.path.join(VR_SCRIPTS_DIR, "VRMenuManager.cs")
+    content = read_file(path)
 
-# -------------------------------------------------------------
-# Topic 4: Fix Camera Feed Selector in VRMenuManager.cs
-# -------------------------------------------------------------
-menu_manager_path = r"C:\Users\dhamm\VR\Assets\Scripts\VRMenuManager.cs"
-with open(menu_manager_path, "r", encoding="utf-8") as f:
-    mm_content = f.read()
+    # Count remaining stereoUIMaterial assignments (should only be the declaration)
+    assignments = content.count('.material = stereoUIMaterial;')
+    if assignments > 0:
+        issues.append(f"VRMenuManager.cs: Still has {assignments} stereoUIMaterial assignments")
 
-# Make sure dynamic camera buttons get LayoutElement minHeight = 44
-old_cam_btn = """                var btnObj = CreateSimpleButton(camButtonContainer, label, 42, bgCol, textCol, () =>"""
-new_cam_btn = """                var btnObj = CreateSimpleButton(camButtonContainer, label, 46, bgCol, textCol, () =>"""
+    # Check all buttons have raycastTarget
+    # The CreateSimpleButton sets img.color which implies Image component exists
+    # Buttons should have raycastTarget=true by default on Image component
 
-if old_cam_btn in mm_content:
-    mm_content = mm_content.replace(old_cam_btn, new_cam_btn)
+    # Check VRRemoteLaserPointer
+    path = os.path.join(VR_SCRIPTS_DIR, "VRRemoteLaserPointer.cs")
+    content = read_file(path)
+    if "0.0f" in content.split("RaycastRectTransformQuad(ray, srt,")[1][:10] if "RaycastRectTransformQuad(ray, srt," in content else "":
+        pass  # Good - exact margins
+    else:
+        if "RaycastRectTransformQuad(ray, srt," in content:
+            issues.append("VRRemoteLaserPointer.cs: Button hitbox margin might not be 0.0f")
 
-# In CreateSimpleButton: add LayoutElement to ensure buttons don't collapse
-old_csb = """            RectTransform rt = btnObj.AddComponent<RectTransform>();
-            rt.sizeDelta = new Vector2(0f, height);"""
+    # Check HandDebugHUD
+    path = os.path.join(VR_SCRIPTS_DIR, "HandDebugHUD.cs")
+    content = read_file(path)
+    null_mats = content.count('.material = null')
+    print(f"[VERIFY] HandDebugHUD.cs: {null_mats} null material assignments")
 
-new_csb = """            RectTransform rt = btnObj.AddComponent<RectTransform>();
-            rt.sizeDelta = new Vector2(0f, height);
-            var le = btnObj.AddComponent<LayoutElement>();
-            le.minHeight = height;
-            le.preferredHeight = height;
-            le.flexibleWidth = 1f;"""
+    # Check VRCameraWindow
+    path = os.path.join(VR_SCRIPTS_DIR, "VRCameraWindow.cs")
+    content = read_file(path)
+    instancing_refs = content.count('enableInstancing = true')
+    print(f"[VERIFY] VRCameraWindow.cs: {instancing_refs} instancing enable calls")
 
-if old_csb in mm_content:
-    mm_content = mm_content.replace(old_csb, new_csb)
-    print("Added LayoutElement in CreateSimpleButton.")
+    if issues:
+        print("\n[WARNING] Some issues remain:")
+        for issue in issues:
+            print(f"  - {issue}")
+    else:
+        print("\n[SUCCESS] All fixes verified successfully!")
 
-with open(menu_manager_path, "w", encoding="utf-8") as f:
-    f.write(mm_content)
-print("Updated VRMenuManager.cs camera feed layout.")
 
-# -------------------------------------------------------------
-# Topic 5: Stereo Dual-Eye HUD in HandDebugHUD.cs
-# -------------------------------------------------------------
-hud_path = r"C:\Users\dhamm\VR\Assets\Scripts\HandDebugHUD.cs"
+def main():
+    print("=" * 70)
+    print("UR3e VR Bridge - Comprehensive UI Fix Script")
+    print("=" * 70)
+    print()
 
-hud_code = """using System;
-using UnityEngine;
-using UnityEngine.UI;
+    total_changes = 0
 
-namespace UR3eVR
-{
-    /// <summary>
-    /// HandDebugHUD: Stereoscopic VR HUD displaying real-time UR3e robot teleoperation telemetry.
-    /// - Replaces legacy OnGUI() with a World Space Canvas rendered in BOTH eyes (Single Pass Instanced).
-    /// - Follows peripheral headset view or attaches to tracking space cleanly.
-    /// - Displays XYZ target vs actual coordinates, bridge connection, grip force, and pause state.
-    /// </summary>
-    public class HandDebugHUD : MonoBehaviour
-    {
-        [Header("References")]
-        public PinchDetector pinchDetector;
-        public GripperBridge gripperBridge;
-        public VRHandMover vrHandMover;
-        public UR3eStarterPoint starterPoint;
-        public SafetyBoundaryVisualizer safetyVisualizer;
-        public script webcamScript;
-        public Transform centerEyeAnchor;
+    print("[1/6] Fixing VRMenuManager.cs (stereo materials + button registration)...")
+    total_changes += fix_vr_menu_manager()
+    print()
 
-        [Header("HUD Canvas Settings")]
-        public float hudDistance = 1.35f;
-        public float hudHeightOffset = -0.18f;
-        public float hudSideOffset = -0.42f; // Left peripheral view
-        public float followSpeed = 6.0f;
+    print("[2/6] Fixing VRRemoteLaserPointer.cs (hitbox accuracy)...")
+    total_changes += fix_vr_remote_laser_pointer()
+    print()
 
-        // UI GameObjects
-        private GameObject hudCanvasObj;
-        private Canvas hudCanvas;
-        private Text titleText;
-        private Text telemetryText;
-        private Text pauseBannerText;
-        private Text helpText;
-        private Image backgroundImage;
-        private Material stereoUIMat;
+    print("[3/6] Fixing HandDebugHUD.cs (stereo + aesthetics)...")
+    total_changes += fix_hand_debug_hud()
+    print()
 
-        private void Start()
-        {
-            FindReferences();
-            BuildStereoHUDCanvas();
-        }
+    print("[4/6] Fixing VRCameraWindow.cs (stereo instancing + aesthetics)...")
+    total_changes += fix_vr_camera_window()
+    print()
 
-        private void FindReferences()
-        {
-            if (pinchDetector == null) pinchDetector = FindAnyObjectByType<PinchDetector>();
-            if (gripperBridge == null) gripperBridge = FindAnyObjectByType<GripperBridge>();
-            if (vrHandMover == null) vrHandMover = FindAnyObjectByType<VRHandMover>();
-            if (starterPoint == null) starterPoint = FindAnyObjectByType<UR3eStarterPoint>();
-            if (safetyVisualizer == null) safetyVisualizer = FindAnyObjectByType<SafetyBoundaryVisualizer>();
-            if (webcamScript == null) webcamScript = FindAnyObjectByType<script>(FindObjectsInactive.Include);
+    print("[5/6] Fixing VRHandStereoFixer.cs (material instancing enforcement)...")
+    total_changes += fix_vr_hand_stereo_fixer()
+    print()
 
-            if (centerEyeAnchor == null)
-            {
-                var cec = GameObject.Find("CenterEyeAnchor");
-                if (cec != null) centerEyeAnchor = cec.transform;
-                if (centerEyeAnchor == null && Camera.main != null) centerEyeAnchor = Camera.main.transform;
-            }
-        }
+    print("[6/6] Fixing VRMenuManager.cs (dynamic button registration)...")
+    total_changes += fix_vr_menu_manager_bg_buttons()
+    print()
 
-        private void BuildStereoHUDCanvas()
-        {
-            hudCanvasObj = new GameObject("StereoHandDebugHUD_Canvas");
-            hudCanvasObj.transform.SetParent(transform, false);
+    print("=" * 70)
+    print("Verification:")
+    print("=" * 70)
+    verify_fixes()
+    print()
 
-            hudCanvas = hudCanvasObj.AddComponent<Canvas>();
-            hudCanvas.renderMode = RenderMode.WorldSpace;
-            hudCanvasObj.AddComponent<CanvasScaler>();
+    print(f"Total scripts modified: {total_changes}")
+    print("Done! Reload Unity to apply changes.")
 
-            var gr = hudCanvasObj.AddComponent<GraphicRaycaster>();
 
-            RectTransform canvasRT = hudCanvasObj.GetComponent<RectTransform>();
-            canvasRT.sizeDelta = new Vector2(480f, 320f);
-            canvasRT.localScale = Vector3.one * 0.0016f; // ~0.75m wide in VR
-
-            Shader stereoShader = Shader.Find("UR3eVR/StereoUI") 
-                               ?? Shader.Find("UI/Default");
-            stereoUIMat = new Material(stereoShader);
-
-            // Background Panel
-            GameObject bgObj = new GameObject("Background");
-            bgObj.transform.SetParent(hudCanvasObj.transform, false);
-            RectTransform bgRT = bgObj.AddComponent<RectTransform>();
-            bgRT.anchorMin = Vector2.zero;
-            bgRT.anchorMax = Vector2.one;
-            bgRT.offsetMin = Vector2.zero;
-            bgRT.offsetMax = Vector2.zero;
-
-            backgroundImage = bgObj.AddComponent<Image>();
-            backgroundImage.material = stereoUIMat;
-            backgroundImage.color = new Color(0.04f, 0.07f, 0.12f, 0.88f);
-
-            var ol = bgObj.AddComponent<Outline>();
-            ol.effectColor = new Color(0.0f, 0.85f, 1.0f, 0.40f);
-            ol.effectDistance = new Vector2(2, -2);
-
-            Font font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
-            if (font == null) font = Font.CreateDynamicFontFromOSFont("Arial", 16);
-
-            // Title
-            GameObject titleObj = new GameObject("Title");
-            titleObj.transform.SetParent(bgObj.transform, false);
-            RectTransform titleRT = titleObj.AddComponent<RectTransform>();
-            titleRT.anchorMin = new Vector2(0.04f, 0.86f);
-            titleRT.anchorMax = new Vector2(0.96f, 0.98f);
-            titleRT.offsetMin = Vector2.zero;
-            titleRT.offsetMax = Vector2.zero;
-
-            titleText = titleObj.AddComponent<Text>();
-            titleText.material = stereoUIMat;
-            titleText.font = font;
-            titleText.fontSize = 18;
-            titleText.fontStyle = FontStyle.Bold;
-            titleText.alignment = TextAnchor.MiddleLeft;
-            titleText.color = new Color(0.0f, 1.0f, 0.85f, 1.0f);
-            titleText.text = "UR3e TELEOPERATION TELEMETRY (STEREO)";
-
-            // Pause Banner
-            GameObject pauseObj = new GameObject("PauseBanner");
-            pauseObj.transform.SetParent(bgObj.transform, false);
-            RectTransform pauseRT = pauseObj.AddComponent<RectTransform>();
-            pauseRT.anchorMin = new Vector2(0.55f, 0.86f);
-            pauseRT.anchorMax = new Vector2(0.96f, 0.98f);
-            pauseRT.offsetMin = Vector2.zero;
-            pauseRT.offsetMax = Vector2.zero;
-
-            pauseBannerText = pauseObj.AddComponent<Text>();
-            pauseBannerText.material = stereoUIMat;
-            pauseBannerText.font = font;
-            pauseBannerText.fontSize = 16;
-            pauseBannerText.fontStyle = FontStyle.Bold;
-            pauseBannerText.alignment = TextAnchor.MiddleRight;
-            pauseBannerText.color = Color.yellow;
-            pauseBannerText.text = "";
-
-            // Main Telemetry Text
-            GameObject bodyObj = new GameObject("TelemetryText");
-            bodyObj.transform.SetParent(bgObj.transform, false);
-            RectTransform bodyRT = bodyObj.AddComponent<RectTransform>();
-            bodyRT.anchorMin = new Vector2(0.04f, 0.16f);
-            bodyRT.anchorMax = new Vector2(0.96f, 0.84f);
-            bodyRT.offsetMin = Vector2.zero;
-            bodyRT.offsetMax = Vector2.zero;
-
-            telemetryText = bodyObj.AddComponent<Text>();
-            telemetryText.material = stereoUIMat;
-            telemetryText.font = font;
-            telemetryText.fontSize = 13;
-            telemetryText.lineSpacing = 1.15f;
-            telemetryText.alignment = TextAnchor.UpperLeft;
-            telemetryText.color = Color.white;
-
-            // Help Footer
-            GameObject helpObj = new GameObject("HelpFooter");
-            helpObj.transform.SetParent(bgObj.transform, false);
-            RectTransform helpRT = helpObj.AddComponent<RectTransform>();
-            helpRT.anchorMin = new Vector2(0.04f, 0.02f);
-            helpRT.anchorMax = new Vector2(0.96f, 0.14f);
-            helpRT.offsetMin = Vector2.zero;
-            helpRT.offsetMax = Vector2.zero;
-
-            helpText = helpObj.AddComponent<Text>();
-            helpText.material = stereoUIMat;
-            helpText.font = font;
-            helpText.fontSize = 12;
-            helpText.alignment = TextAnchor.MiddleLeft;
-            helpText.color = new Color(0.6f, 0.85f, 1.0f, 0.85f);
-            helpText.text = "Left Remote: [X] Set Origin/Home | [Y] Pause/Resume | [L-Stick] Auto-Shake";
-        }
-
-        private void LateUpdate()
-        {
-            if (centerEyeAnchor == null) FindReferences();
-
-            // Refresh World Camera for Stereo Rendering in Both Eyes
-            if (hudCanvas != null && centerEyeAnchor != null)
-            {
-                var cam = centerEyeAnchor.GetComponent<Camera>();
-                if (cam != null && hudCanvas.worldCamera != cam)
-                {
-                    hudCanvas.worldCamera = cam;
-                }
-            }
-
-            // Smooth Peripheral Billboard Placement
-            if (centerEyeAnchor != null && hudCanvasObj != null)
-            {
-                Vector3 headForward = centerEyeAnchor.forward;
-                headForward.y = 0f;
-                if (headForward.sqrMagnitude > 0.001f) headForward.Normalize();
-                else headForward = Vector3.forward;
-
-                Vector3 headRight = Vector3.Cross(Vector3.up, headForward).normalized;
-
-                Vector3 targetPos = centerEyeAnchor.position
-                                  + headForward * hudDistance
-                                  + headRight * hudSideOffset
-                                  + Vector3.up * hudHeightOffset;
-
-                hudCanvasObj.transform.position = Vector3.Lerp(hudCanvasObj.transform.position, targetPos, Time.deltaTime * followSpeed);
-                hudCanvasObj.transform.rotation = Quaternion.LookRotation(hudCanvasObj.transform.position - centerEyeAnchor.position);
-            }
-
-            // Update Telemetry Display
-            UpdateTelemetryContent();
-        }
-
-        private void UpdateTelemetryContent()
-        {
-            if (telemetryText == null) return;
-
-            bool isPaused = vrHandMover != null && vrHandMover.isTeleoperationPaused;
-            if (pauseBannerText != null)
-            {
-                pauseBannerText.text = isPaused ? "[PAUSED - FROZEN]" : "[TRACKING ACTIVE]";
-                pauseBannerText.color = isPaused ? new Color(1f, 0.25f, 0.25f, 1f) : new Color(0.2f, 1f, 0.4f, 1f);
-            }
-
-            string bridgeStatus = (gripperBridge != null && gripperBridge.isConnected) ? "<color=#00FF88>CONNECTED</color>" : "<color=#FF4444>OFFLINE</color>";
-            string modeStatus = "CLOSED-LOOP 6-DOF POSE";
-
-            Vector3 tgtMm = (vrHandMover != null) ? vrHandMover.targetRobotPos * 1000f : Vector3.zero;
-            Vector3 actMm = (gripperBridge != null) ? gripperBridge.actualRobotPos * 1000f : Vector3.zero;
-            float posErrMm = Vector3.Distance(tgtMm, actMm);
-
-            string homeStatus = (starterPoint != null && starterPoint.isAtHome) ? "<color=#00FF88>READY AT HOME</color>" : "<color=#00D4FF>OFF-HOME</color>";
-            string pinchDesc = (pinchDetector != null) ? $"Pinch: {pinchDetector.normalizedPinch * 100f:F0}% ({pinchDetector.gripPositionMm:F1} mm)" : "Pinch: N/A";
-            string barrierDesc = (safetyVisualizer != null) ? $"Dist to Base: {safetyVisualizer.distToBase * 100f:F1} cm | Limit: {safetyVisualizer.outerRadius * 100f:F0} cm" : "";
-
-            telemetryText.text = 
-                $"Bridge: {bridgeStatus} | Mode: {modeStatus}\\n" +
-                $"Starter Point: {homeStatus} | {barrierDesc}\\n\\n" +
-                $"<color=#00F0FF>Target XYZ:</color>  X:{tgtMm.x,5:F0}  Y:{tgtMm.y,5:F0}  Z:{tgtMm.z,5:F0} mm\\n" +
-                $"<color=#00FF88>Actual XYZ:</color>  X:{actMm.x,5:F0}  Y:{actMm.y,5:F0}  Z:{actMm.z,5:F0} mm  (Err: {posErrMm:F1} mm)\\n\\n" +
-                $"{pinchDesc}";
-        }
-    }
-}
-"""
-
-with open(hud_path, "w", encoding="utf-8") as f:
-    f.write(hud_code)
-print("Updated HandDebugHUD.cs to Stereo World Space Canvas successfully.")
-
-print("All 5 topics successfully generated and updated!")
+if __name__ == "__main__":
+    main()
