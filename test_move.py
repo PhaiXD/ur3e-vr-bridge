@@ -8,11 +8,13 @@ import rtde_control
 import rtde_receive
 from ukf_filter import UnscentedKalmanFilter1D
 from robot_safety import (
-    SHOULDER_Z, SPHERE_MAX, SPHERE_MIN, MIN_Z, MAX_Z,
+    SHOULDER_Z, SPHERE_MAX, SPHERE_MIN, CYLINDER_RADIUS, CARTESIAN_TCP_SPEED_CAP,
+    MIN_Z, MAX_Z,
     JOINT_LIMITS_DEG, JOINT_LIMITS_RAD, JOINT_NAMES,
-    MAX_SAFE_JOINT_SPEED_DEG, filter_cartesian_velocity,
+    MAX_SAFE_JOINT_SPEED_DEG, JOINT_MAX_SPEEDS, filter_cartesian_velocity,
     filter_joint_velocity, compute_ur3e_jacobian, solve_dls_system,
-    compute_tool_rotation_vectors, compute_pose_error
+    compute_tool_rotation_vectors, compute_pose_error,
+    compute_safety_proximity
 )
 
 # ตั้งค่า stdout เป็น utf-8 เพื่อรองรับภาษาไทยและ emoji บน Windows Console
@@ -36,10 +38,10 @@ STREAM_TIME_BUFFER = 0.04   # วินาที (40 ms) Lookahead time window �
 J_SPEED = 0.80              # rad/s สำหรับ moveJ ตอนกลับ Safe Home
 J_ACCEL = 1.00              # rad/s² สำหรับ moveJ ตอนกลับ Safe Home
 
-# อัตราเร็วและอัตราเร่งเฉพาะสำหรับ VR Hand Tracking (กำจัดแรงเฉื่อยและอาการดีเลย์เมื่อเคลื่อนไหวเร็ว)
-VR_TRACKING_MAX_SPEED = 0.22    # m/s (220 mm/s) เพดานความเร็วติดตามมือ VR (ขยับมือเร็ว หุ่นยนต์ตามทันทันที ไม่ตกค้าง)
-VR_TRACKING_MAX_ROT = 2.20      # rad/s (~126°/s) เพดานความเร็วหมุนข้อมือตาม VR Hand คล่องตัว ฉับไว ไร้ความหน่วง
-VR_BRAKE_ACCEL = 1.15           # m/s² อัตราเร่งเบรกชะลอหยุดฉับไว ตัดแรงเฉื่อย (Inertia) ให้หยุดสนิททันทีเมื่อมือหยุด
+# อัตราเร็วและอัตราเร่งเฉพาะสำหรับ VR Hand Tracking (กำจัดแรงเฉื่อยและแรงเหวี่ยง 100%)
+VR_TRACKING_MAX_SPEED = 0.20    # m/s (200 mm/s) เพดานความเร็วติดตามมือ VR (ลดโมเมนตัมและแรงเหวี่ยง)
+VR_TRACKING_MAX_ROT = 3.80      # rad/s (~218°/s) หมุนเร็ว คล่องตัว ฉับไว เพดานความเร็วหมุนข้อมือตาม VR Hand (ไร้แรงเหวี่ยงข้อมือ)
+VR_BRAKE_ACCEL = 1.50           # m/s² อัตราเร่งเบรกชะลอหยุดฉับไว ตัดแรงเฉื่อย (Inertia) ให้หยุดสนิททันทีเมื่อมือหยุด
 
 
 # ==================== การตั้งค่า Gripper (Robotiq) ====================
@@ -537,6 +539,52 @@ def move_to_safe_home(rtde_c, rtde_r):
         return False
 
 
+def execute_auto_shake(rtde_c, rtde_r, vr_server=None, tare_func=None):
+    """
+    เขย่าสารอัตโนมัติ (Automatic Test Tube Shaking):
+    1. เคลื่อนที่ไปที่ท่า Safe Home ก่อนเสมอเพื่อความปลอดภัยและพื้นที่ทำงานโล่ง
+    2. จากมุมองศา home (Wrist 3 = 180°):
+       - คว่ำหลอดทดลอง: หมุน Wrist 3 180° (ไปที่ 0°)
+       - พลิกกลับมา: หมุน Wrist 3 -180° (กลับมาที่ 180°)
+       - ทำแบบนี้ 3 รอบอย่างราบรื่นและนุ่มนวล
+    3. เมื่อเสร็จ ทำการ Auto-Tare และแจ้งเตือนสถานะกลับไปยัง Unity HUD
+    """
+    print("\n🧪 [Auto Shake] เริ่มกระบวนการเขย่าสารอัตโนมัติ 3 รอบ...")
+    if vr_server:
+        vr_server.send_alert("INFO", "🧪 เริ่มเขย่าสารอัตโนมัติ: กำลังเคลื่อนที่ไปท่า Home...")
+
+    move_to_safe_home(rtde_c, rtde_r)
+    time.sleep(0.3)
+
+    q_home = list(HOME_Q)
+    q_inverted = list(HOME_Q)
+    q_inverted[5] = math.radians(0)  # หมุน Wrist 3 คว่ำหลอด 180° (จาก 180° -> 0°)
+
+    SHAKE_SPEED = 3.2   # rad/s (~185°/s) หมุนเร็ว มั่นคง ไม่กระชาก
+    SHAKE_ACCEL = 4.5   # rad/s²
+
+    for cycle in range(1, 4):
+        print(f"   🔄 [รอบที่ {cycle}/3] กำลังคว่ำหลอดทดลอง (180°)...")
+        if vr_server:
+            vr_server.send_alert("INFO", f"🧪 กำลังเขย่าสาร... รอบที่ {cycle}/3 (คว่ำ 180°)")
+        rtde_c.moveJ(q_inverted, SHAKE_SPEED, SHAKE_ACCEL)
+        time.sleep(0.25)
+
+        print(f"   🔄 [รอบที่ {cycle}/3] กำลังพลิกหลอดกลับ (-180°)...")
+        if vr_server:
+            vr_server.send_alert("INFO", f"🧪 กำลังเขย่าสาร... รอบที่ {cycle}/3 (หงายกลับ -180°)")
+        rtde_c.moveJ(q_home, SHAKE_SPEED, SHAKE_ACCEL)
+        time.sleep(0.25)
+
+    print("✅ [Auto Shake] เขย่าสารอัตโนมัติครบ 3 รอบเรียบร้อยแล้ว!")
+    if vr_server:
+        vr_server.send_alert("SUCCESS", "✅ เขย่าสารอัตโนมัติครบ 3 รอบเรียบร้อยแล้ว!")
+
+    if tare_func:
+        tare_func("เสร็จสิ้นการเขย่าสารอัตโนมัติ 3 รอบ")
+    return True
+
+
 # ==================== โปรแกรมหลัก ====================
 if __name__ == "__main__":
     print(f"กำลังเชื่อมต่อไปที่หุ่นยนต์ UR3e IP: {ROBOT_IP} ...")
@@ -556,7 +604,8 @@ if __name__ == "__main__":
         vr_hand_state = {
             "grip_pos": 0,
             "tare_requested": False,
-            "home_requested": False
+            "home_requested": False,
+            "shake_requested": False
         }
         vr_invert = {
             "x": False, "y": False, "z": False,
@@ -586,6 +635,8 @@ if __name__ == "__main__":
                 vr_vel[5] = wz
 
         def on_vr_grip(p):
+            if vr_server is not None and getattr(vr_server, 'is_teleop_paused', False):
+                return
             with vr_vel_lock:
                 vr_hand_state["grip_pos"] = p
             gripper.set_position(p)
@@ -598,6 +649,10 @@ if __name__ == "__main__":
             with vr_vel_lock:
                 vr_hand_state["home_requested"] = True
 
+        def on_vr_shake():
+            with vr_vel_lock:
+                vr_hand_state["shake_requested"] = True
+
         # เริ่มต้น VR Bridge Server (TCP Port 5555 สำหรับเชื่อม Unity Meta Quest Hand Tracking)
         try:
             from vr_bridge_server import VRBridgeServer
@@ -607,7 +662,8 @@ if __name__ == "__main__":
                 on_move_callback=on_vr_move,
                 on_tare_callback=on_vr_tare,
                 on_pose_callback=on_vr_pose,
-                on_home_callback=on_vr_home
+                on_home_callback=on_vr_home,
+                on_shake_callback=on_vr_shake
             )
             vr_server.start()
         except Exception as e:
@@ -642,10 +698,12 @@ if __name__ == "__main__":
         print("   [1] / [2] / [3]  : สลับทิศทาง VR เชิงเส้น (1:หน้า-หลัง, 2:ซ้าย-ขวา, 3:ขึ้น-ลง)")
         print("   [4] / [5] / [6]  : สลับทิศทาง VR การหมุน (4:Roll บิดข้อมือ, 5:Pitch ก้ม-เงย, 6:Yaw หันซ้าย-ขวา)")
         print("   [T]              : Tare / เซ็ตศูนย์แรง Fz (วัดแรงบีบ Gripper แม่นยำ)")
+        print("   [K]              : เขย่าสารอัตโนมัติ (Shake Test Tube 3 Cycles) คว่ำ 180° และหันกลับ -180°")
         print("   🖐️ Auto-Tare    : เมื่ออ้านิ้วระดับ <= 35/255 จะ Calibrate เซ็ตศูนย์แรง Fz อัตโนมัติทุกครั้ง (เหมือนกด [T])")
         print("   [Q]              : ออกจากโปรแกรม")
+        print("   🎮 Left Remote   : [X] Set Origin & Home | [Y] Pause/Resume แขนกล | [Joy Stick Click] เขย่าสารอัตโนมัติ 3 รอบ")
         print("   🥽 VR Hand      : ขยับมือ = แขนกลขยับตาม | บิด/ก้มเงย/หันมือ = แขนกลหมุนตาม (6-DOF) | หนีบนิ้ว = Gripper หนีบ")
-        print("   🧤 bHaptics      : ถุงมือสั่นตอบสนองตามแรงจริง Fz จาก Gripper")
+        print("   🧤 bHaptics      : ถุงมือสั่นตอบสนองตามแรงจริง Fz จาก Gripper | จีบสุดสั่น 100% ไม่มีเงื่อนไข")
         print("   📈 UKF Filter    : กรองแรงบีบ Fz ด้วย Unscented Kalman Filter สมูทและเนียน ไร้ Noise")
         print("==================================================")
 
@@ -697,7 +755,9 @@ if __name__ == "__main__":
         was_moving_arm = False
         gripper_moving_close = False
         gripper_moving_open = False
+        was_teleop_paused = False
         prev_h_pressed = False
+        prev_k_pressed = False
         prev_1_pressed = False
         prev_2_pressed = False
         prev_3_pressed = False
@@ -709,6 +769,8 @@ if __name__ == "__main__":
         prev_m_pressed = False
         prev_comma_pressed = False
         speed_level = 1.0  # 1.0 = 100%, 0.5 = 50%, 3.0 = MAX 300%
+        speed_pct = int(round(speed_level * 100))
+        smooth_grip_force = 0.0
         current_stream_qd = [0.0] * 6  # ตัวแปรจำความเร็วข้อต่อสำหรับการทำ Velocity Ramp นุ่มนวล ไร้ Jerk
         current_cart_cmd = [0.0] * 6   # ตัวแปรจำความเร็ว Cartesian 6-DOF สำหรับทำ S-curve Velocity Ramp ไร้แรงกระชากเมื่อกลับทิศทาง
         is_pose_settled = False        # สถานะหยุดนิ่งสนิทตามพิกัด (Hysteresis Deadband ป้องกันอาการสั่น/โยกซ้ายขวา)
@@ -720,9 +782,12 @@ if __name__ == "__main__":
 
         while True:
             t_loop_start = time.time()
+            speed_pct = int(round(speed_level * 100))
             # 1. ตรวจสอบ Protective Stop ก่อน
             if check_protective_stop(rtde_r):
                 print("\n🛑 ตรวจพบ PROTECTIVE STOP!")
+                if 'vr_server' in locals() and vr_server:
+                    vr_server.send_alert("ERROR", "UR3e Protective Stop Detected!")
                 if was_moving_arm:
                     try:
                         rtde_c.speedStop(STOP_ACCEL)
@@ -773,6 +838,31 @@ if __name__ == "__main__":
                 # Auto-Tare เมื่อกลับถึง Home เพื่อตัดการสั่นค้าง
                 perform_tare(f"กลับถึง Safe Home ({trigger_source})")
             prev_h_pressed = h_pressed
+
+            # 4a. ตรวจสอบคำสั่งเขย่าสารอัตโนมัติ (Edge Trigger จากแป้นพิมพ์ [K] หรือคำสั่ง SHAKE จากปุ่ม Thumbstick ซ้ายใน VR)
+            with vr_vel_lock:
+                vr_shake_req = vr_hand_state["shake_requested"]
+                vr_hand_state["shake_requested"] = False
+
+            k_pressed = keyboard.is_pressed('k')
+            if (k_pressed and not prev_k_pressed) or vr_shake_req:
+                trigger_source = "ปุ่ม Joy Stick บนรีโมทซ้าย (VR Left Thumbstick Click)" if vr_shake_req else "กดปุ่ม [K]"
+                print(f"\n🧪 ได้รับคำสั่งเขย่าสารอัตโนมัติ 3 รอบ จาก: {trigger_source}")
+                if was_moving_arm:
+                    rtde_c.speedStop(STOP_ACCEL)
+                    was_moving_arm = False
+                current_cart_cmd = [0.0] * 6
+                with vr_vel_lock:
+                    vr_pose_state["target_pose"] = None
+                    vr_vel = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                is_pose_settled = False
+                is_rot_settled = False
+                execute_auto_shake(rtde_c, rtde_r, vr_server=vr_server, tare_func=perform_tare)
+                time.sleep(0.3)
+                current_pose = rtde_r.getActualTCPPose()
+                if 'vr_server' in locals() and vr_server:
+                    vr_server.send_feedback(cached_gripper_pos, smooth_grip_force, speed_pct, actual_tcp_pose=current_pose)
+            prev_k_pressed = k_pressed
 
             # 4b. สลับทิศทางแกน VR Hand ทันที (Edge Trigger บนแป้นตัวเลขแถวบน ไม่ชนกับ Numpad)
             p1 = keyboard.is_pressed('1') and not is_num_key(1)
@@ -849,12 +939,14 @@ if __name__ == "__main__":
             p_n = keyboard.is_pressed('n') or keyboard.is_pressed(49)
             if p_n and not prev_n_pressed:
                 speed_level = 0.5
+                speed_pct = int(round(speed_level * 100))
                 print(f"\n🐢 [ระดับความเร็ว]: 50% (SMOOTH={SMOOTH_SPEED*speed_level*1000:.0f} mm/s, ROT={math.degrees(ROT_SPEED*speed_level):.1f}°/s - โหมดงานละเอียด)\n")
             prev_n_pressed = p_n
 
             p_m = keyboard.is_pressed('m') or keyboard.is_pressed(50)
             if p_m and not prev_m_pressed:
                 speed_level = 1.0
+                speed_pct = int(round(speed_level * 100))
                 print(f"\n🚀 [ระดับความเร็ว]: 100% (SMOOTH={SMOOTH_SPEED*speed_level*1000:.0f} mm/s, ROT={math.degrees(ROT_SPEED*speed_level):.1f}°/s - ความเร็วปกติเต็มพิกัด)\n")
             prev_m_pressed = p_m
 
@@ -866,13 +958,19 @@ if __name__ == "__main__":
                 pass
             if p_comma and not prev_comma_pressed:
                 speed_level = 3.0  # MAX Mode (300% speed, 210 mm/s, high acceleration 0.75 m/s²)
+                speed_pct = int(round(speed_level * 100))
                 print(f"\n⚡⚡⚡ [ระดับความเร็ว]: MAX เต็มพิกัด 300% (SMOOTH={SMOOTH_SPEED*speed_level*1000:.0f} mm/s, ACCEL={min(1.0, SMOOTH_ACCEL*speed_level):.2f} m/s², ROT={math.degrees(ROT_SPEED*speed_level):.1f}°/s)")
                 print("   🎮 โหมด Real-time สูงสุด: ขยับตามแขนและมือ VR ฉับไว ไร้ความหน่วง!\n")
             prev_comma_pressed = p_comma
 
             # 5. ควบคุม Gripper (กดค้าง = เคลื่อนที่ต่อเนื่อง, ปล่อย = หยุดทันที)
-            eq_pressed = keyboard.is_pressed('=') or keyboard.is_pressed('+')
-            minus_pressed = keyboard.is_pressed('-') or keyboard.is_pressed('_')
+            # หากอยู่ในสถานะ Pause ให้ระงับการสั่งงาน Gripper ทั้งหมด
+            if getattr(vr_server, 'is_teleop_paused', False):
+                eq_pressed = False
+                minus_pressed = False
+            else:
+                eq_pressed = keyboard.is_pressed('=') or keyboard.is_pressed('+')
+                minus_pressed = keyboard.is_pressed('-') or keyboard.is_pressed('_')
 
             if eq_pressed:
                 if not gripper_moving_close:
@@ -967,68 +1065,62 @@ if __name__ == "__main__":
                 # 1. ระยะห่างเชิงเส้น (Position Error Magnitude)
                 pos_dist = math.sqrt(pos_err[0]**2 + pos_err[1]**2 + pos_err[2]**2)
 
-                # กำหนด Deadband พร้อม Hysteresis และ Smooth S-curve transition
-                # เพื่อกำจัดปัญหา Hunting Oscillation (แรงโยกซ้ายขวาตอนหยุด) 100%
-                # - เมื่อหุ่นเข้าใกล้เป้าหมายในระยะ 3.0 mm (หรือหมุนใกล้ < 0.80°): เข้าสู่สถานะ Settled (หยุดนิ่งสนิท)
-                # - Hysteresis: จะไม่เริ่มขยับใหม่จนกว่ามือจะตั้งใจขยับเกิน 5.0 mm (หรือบิดเกิน 1.80°)
-                #   ตัดปัญหา Tracking jitter ของ Meta Quest ไม่ให้กระตุ้นการขยับซ้ำไปซ้ำมา
+                # อ่านความเร็วจริงของ TCP เพื่อทำ Active Velocity Damping (PD Control)
+                try:
+                    act_tcp_speed = rtde_r.getActualTCPSpeed()
+                except Exception:
+                    act_tcp_speed = [0.0] * 6
+                act_vx, act_vy, act_vz = act_tcp_speed[0], act_tcp_speed[1], act_tcp_speed[2]
+                act_wx, act_wy, act_wz = act_tcp_speed[3], act_tcp_speed[4], act_tcp_speed[5]
+                act_lin_spd = math.sqrt(act_vx**2 + act_vy**2 + act_vz**2)
+                act_rot_spd = math.sqrt(act_wx**2 + act_wy**2 + act_wz**2)
+
+                # กำหนด Deadband พร้อม Hysteresis และ Dynamic Settling Detection
+                # จะเข้าสู่สถานะ Settled ได้ก็ต่อเมื่อ "ทั้งระยะห่างใกล้เป้าหมาย" และ "ความเร็วจริงชะลอลงแล้ว"
+                # กำจัดปัญหาการสะบัด/สวิงเลยเป้าหมาย (Overshoot & Ringing) 100%
                 if is_pose_settled:
-                    if pos_dist > 0.0050:
+                    if pos_dist > 0.0060:
                         is_pose_settled = False
                 else:
-                    if pos_dist <= 0.0030:
+                    if pos_dist <= 0.0035 and act_lin_spd < 0.020:
                         is_pose_settled = True
 
                 if is_pose_settled:
                     v_p = [0.0, 0.0, 0.0]
                 else:
-                    pos_deadband_min = 0.0030
-                    pos_deadband_max = 0.0100
-                    blend = min(1.0, max(0.0, (pos_dist - pos_deadband_min) / (pos_deadband_max - pos_deadband_min)))
-                    blend_smooth = blend * blend * (3.0 - 2.0 * blend)
+                    # S-Curve Soft Landing Approach Speed with Critical Damping
+                    kp_pos = 3.8 * speed_level
+                    vr_speed_cap = max(cur_smooth_speed, VR_TRACKING_MAX_SPEED * min(speed_level, 1.4))
+                    v_desired = min(pos_dist * kp_pos, vr_speed_cap)
 
-                    # Kinematic Deceleration Bounding (เบรกทันก่อน Deadband ป้องกัน Overshoot และตัดแรงเฉื่อย)
-                    a_dec = max(0.65, cur_smooth_accel * 2.5)
-                    d_eff = max(0.0, pos_dist - pos_deadband_min)
-                    v_stop_max = math.sqrt(2.0 * a_dec * d_eff)
-
-                    # Proportional Gain (4.0 ตอบสนองฉับไวทันที ไร้ Lag และไม่สวิง)
-                    kp_pos = 4.0 * speed_level
-                    vr_speed_cap = max(cur_smooth_speed, VR_TRACKING_MAX_SPEED * min(speed_level, 1.8))
-                    v_cmd_mag = min(pos_dist * kp_pos, v_stop_max, vr_speed_cap) * blend_smooth
-
+                    # Critical Velocity Damping (Anti-Inertia & Anti-Centrifugal Control):
+                    # Kp=3.8, Kd=0.85 ทำให้ระบบอยู่ในสภาวะ Critically Damped
+                    # กำจัดแรงเหวี่ยงและแรงเฉื่อยสะสม 100% หุ่นยนต์จะหยุดนิ่งสนิททันทีเมื่อมือหยุด ไร้การสวิงเลยเป้าหมาย
+                    kd_pos = 0.85
                     dir_p = [pos_err[i] / pos_dist for i in range(3)]
-                    v_p = [dir_p[i] * v_cmd_mag for i in range(3)]
+                    v_p = [dir_p[i] * v_desired - kd_pos * [act_vx, act_vy, act_vz][i] for i in range(3)]
 
-                # 2. ระยะห่างเชิงมุม (Rotation Error Magnitude พร้อม Hysteresis)
+                # 2. ระยะห่างเชิงมุม (Rotation Error Magnitude พร้อม Hysteresis & Critical Angular Damping)
                 rot_dist = math.sqrt(rot_err[0]**2 + rot_err[1]**2 + rot_err[2]**2)
-                rot_deadband_min = math.radians(0.80)
-                rot_deadband_max = math.radians(2.50)
 
                 if is_rot_settled:
-                    if rot_dist > math.radians(1.80):
+                    if rot_dist > math.radians(2.00):
                         is_rot_settled = False
                 else:
-                    if rot_dist <= rot_deadband_min:
+                    if rot_dist <= math.radians(0.85) and act_rot_spd < 0.08:
                         is_rot_settled = True
 
                 if is_rot_settled:
                     w_p = [0.0, 0.0, 0.0]
                 else:
-                    rot_blend = min(1.0, max(0.0, (rot_dist - rot_deadband_min) / (rot_deadband_max - rot_deadband_min)))
-                    rot_blend_smooth = rot_blend * rot_blend * (3.0 - 2.0 * rot_blend)
-
-                    # Kinematic Angular Deceleration Bounding (หยุดนิ่งสนิทเมื่อข้อมือหยุดหมุน)
-                    alpha_dec = max(6.5, cur_stream_accel * 6.0)
-                    theta_eff = max(0.0, rot_dist - rot_deadband_min)
-                    w_stop_max = math.sqrt(2.0 * alpha_dec * theta_eff)
-
+                    # Fast & Snappy Angular Control (เร็ว ฉับพลัน คล่องแคล่ว ไร้ความหน่วงหนืด)
                     kp_rot = 5.5 * speed_level
                     vr_rot_cap = max(cur_rot_speed * 1.5, VR_TRACKING_MAX_ROT * min(speed_level, 1.8))
-                    w_cmd_mag = min(rot_dist * kp_rot, w_stop_max, vr_rot_cap) * rot_blend_smooth
+                    w_desired = min(rot_dist * kp_rot, vr_rot_cap)
 
+                    kd_rot = 0.15
                     dir_r = [rot_err[i] / rot_dist for i in range(3)]
-                    w_p = [dir_r[i] * w_cmd_mag for i in range(3)]
+                    w_p = [dir_r[i] * w_desired - kd_rot * [act_wx, act_wy, act_wz][i] for i in range(3)]
 
                 vx += v_p[0]
                 vy += v_p[1]
@@ -1090,6 +1182,29 @@ if __name__ == "__main__":
             # ------------------------------------------------------------
             # ตรวจสอบและสั่งการเคลื่อนที่ (Joint Space: speedJ / Cartesian Space: speedL)
             # ------------------------------------------------------------
+            # ด่านตรวจ Pause จากปุ่ม Y บน Meta Quest Touch Remote:
+            # หากอยู่ในสถานะ Pause ให้ตัดความเร็วทั้งหมดเป็น 0, เคลียร์ Target Pose, หยุดแขนกล และหยุด Gripper ทันที
+            is_paused_now = getattr(vr_server, 'is_teleop_paused', False)
+            if is_paused_now:
+                vx = vy = vz = wx = wy = wz = 0.0
+                qd_wrist = [0.0] * 6
+                current_stream_qd = [0.0] * 6
+                current_cart_cmd = [0.0] * 6
+                vr_pose_state["target_pose"] = None
+                if was_moving_arm:
+                    try:
+                        rtde_c.speedStop(STOP_ACCEL)
+                    except Exception:
+                        pass
+                    was_moving_arm = False
+                if not was_teleop_paused:
+                    # เพิ่งเข้าสู่สถานะ Pause -> สั่งหยุด Gripper ทันทีเพื่อความปลอดภัย
+                    try:
+                        gripper.stop()
+                    except Exception:
+                        pass
+            was_teleop_paused = is_paused_now
+
             is_wrist_moving = any(q != 0.0 for q in qd_wrist)
             is_cart_moving = (vx != 0.0 or vy != 0.0 or vz != 0.0 or wx != 0.0 or wy != 0.0 or wz != 0.0)
             is_streaming_wrist = any(abs(q) > 1e-4 for q in current_stream_qd)
@@ -1165,32 +1280,22 @@ if __name__ == "__main__":
                 cur_v = current_cart_cmd[0:3]
                 cur_w = current_cart_cmd[3:6]
 
-                # 1. ตรวจจับการกลับทิศทาง (Direction Reversal) เพื่อสลับอัตราเร่งหยุดและกลับตัวฉับไว ไร้ Dead-zone
+                # 1. Ramping ความเร็วเชิงเส้น (Asymmetric Acceleration & Deceleration):
+                # - เมื่อชะลอความเร็ว (Braking / Reversing): ใช้อัตราเร่งเบรกเต็มพิกัด 2.25 m/s² เพื่อหยุดทันที ไร้แรงเฉื่อยสะสม
+                # - เมื่อเร่งความเร็ว (Accelerating): ใช้อัตราเร่งนุ่มนวล 1.25 m/s² เพื่อความสบายมือ ไร้แรงกระชากกลไก
                 cur_v_mag = math.sqrt(cur_v[0]**2 + cur_v[1]**2 + cur_v[2]**2)
                 tgt_v_mag = math.sqrt(tgt_v[0]**2 + tgt_v[1]**2 + tgt_v[2]**2)
                 dot_v = cur_v[0]*tgt_v[0] + cur_v[1]*tgt_v[1] + cur_v[2]*tgt_v[2]
-                is_reversing = (cur_v_mag > 0.020 and tgt_v_mag > 0.020 and dot_v < 0.0)
+                is_braking_v = (tgt_v_mag < cur_v_mag) or (dot_v <= 0.0)
 
-                tgt_w_mag = math.sqrt(tgt_w[0]**2 + tgt_w[1]**2 + tgt_w[2]**2)
-
-                # อัตราเร่งเชิงเส้น (Linear Acceleration):
-                # - เมื่อกลับทิศทางขณะกำลังเคลื่อนที่เร็ว (is_reversing): ใช้อัตราเร่งเบรก VR_BRAKE_ACCEL (1.15 m/s²) เพื่อกลับตัวฉับไว
-                # - เมื่อกำลังเข้าสู่จุดหมายปลายทาง (is_settling): ใช้อัตราเร่งลดลงอย่างนุ่มนวล (0.35 m/s²) เป็น Settling Cushion
-                #   *สำคัญมาก*: จะเข้าสู่ Settling Cushion ได้ก็ต่อเมื่อ "ทั้งตำแหน่งและมุมหมุน" ใกล้เป้าหมายแล้วจริงๆ
-                #   หากผู้ใช้กำลังหมุนข้อมืออยู่ (rot_dist >= 4.0°) แขนกลจะยังคงอยู่ใน Active Tracking เต็มพิกัด ไม่หน่วงทั้งแขน!
-                # - เมื่อติดตามมือปกติใน VR: ใช้ 0.90-1.15 m/s² เพื่อความฉับไวติดมือ ไม่หน่วง ไม่ล้าหลัง
-                # - เมื่อใช้คีย์บอร์ด WASD: ใช้ cur_smooth_accel (0.25 m/s²) นุ่มนวล
-                is_settling = is_pose_mode and (pos_dist < 0.025 or tgt_v_mag < 0.025) and (rot_dist < math.radians(4.0) and tgt_w_mag < 0.08)
-                if is_reversing and cur_v_mag > 0.03:
-                    a_lin = VR_BRAKE_ACCEL
-                elif is_settling:
-                    a_lin = 0.35  # Settling Cushion นุ่มนวล ไร้แรงกระชาก/โยกซ้ายขวา
+                if is_braking_v:
+                    a_lin = 2.50  # m/s² เบรกเร็ว มั่นคง ไร้แรงเฉื่อยสะสม
                 elif is_pose_mode:
-                    a_lin = max(0.85, min(1.15, 0.65 * speed_level + 0.35))
+                    a_lin = max(1.50, min(2.50, 1.20 * speed_level + 0.60))
                 else:
                     a_lin = cur_smooth_accel
 
-                # Ramping ความเร็วเชิงเส้น (S-curve rate limiter ไร้แรงกระชาก)
+                # Ramping ความเร็วเชิงเส้น
                 diff_v = [tgt_v[i] - cur_v[i] for i in range(3)]
                 diff_v_mag = math.sqrt(diff_v[0]**2 + diff_v[1]**2 + diff_v[2]**2)
                 max_step_v = a_lin * dt_loop
@@ -1201,20 +1306,23 @@ if __name__ == "__main__":
                     scale_v = max_step_v / diff_v_mag
                     cur_v = [cur_v[i] + diff_v[i] * scale_v for i in range(3)]
 
-                # 2. Ramping ความเร็วเชิงมุม (Angular S-curve limiter สำหรับ Wrist Wx, Wy, Wz)
+                # 2. Ramping ความเร็วเชิงมุม (Wrist Angular Asymmetric Rate Limiter):
+                # - เมื่อชะลอการหมุนข้อมือ (Braking / Reversing): ใช้ 12.0 rad/s² หยุดหมุนข้อมือสนิทตามมือทันที ไร้แรงเหวี่ยง
+                # - เมื่อเร่งการหมุน: ใช้ 8.0 rad/s² หมุนตามมือฉับไว คล่องตัว ไร้ความหน่วง
+                cur_w_mag = math.sqrt(cur_w[0]**2 + cur_w[1]**2 + cur_w[2]**2)
+                tgt_w_mag = math.sqrt(tgt_w[0]**2 + tgt_w[1]**2 + tgt_w[2]**2)
+                dot_w = cur_w[0]*tgt_w[0] + cur_w[1]*tgt_w[1] + cur_w[2]*tgt_w[2]
+                is_braking_w = (tgt_w_mag < cur_w_mag) or (dot_w <= 0.0)
+
+                if is_braking_w:
+                    a_rot = 35.0  # rad/s² หยุดหมุนฉับไว ไร้หน่วง
+                elif is_pose_mode:
+                    a_rot = 28.0 * speed_level  # หมุนตามมือฉับพลัน คล่องตัวสูง
+                else:
+                    a_rot = cur_stream_accel * 5.0
+
                 diff_w = [tgt_w[i] - cur_w[i] for i in range(3)]
                 diff_w_mag = math.sqrt(diff_w[0]**2 + diff_w[1]**2 + diff_w[2]**2)
-                cur_w_mag = math.sqrt(cur_w[0]**2 + cur_w[1]**2 + cur_w[2]**2)
-                dot_w = cur_w[0]*tgt_w[0] + cur_w[1]*tgt_w[1] + cur_w[2]*tgt_w[2]
-                is_reversing_rot = (cur_w_mag > 0.05 and tgt_w_mag > 0.05 and dot_w < 0.0)
-
-                is_settling_rot = is_pose_mode and (rot_dist < math.radians(2.5) and tgt_w_mag < 0.05)
-                if is_reversing_rot:
-                    a_rot = 14.0  # rad/s² สลับทิศทางหมุนข้อมือฉับไว ไร้ Lag
-                elif is_settling_rot:
-                    a_rot = 3.5   # rad/s² Settling cushion สำหรับการหมุนข้อมือ นุ่มนวล ไม่ดีด
-                else:
-                    a_rot = 10.0 if is_pose_mode else cur_stream_accel * 4.0  # rad/s² หมุนตามมือ VR ทันที ไม่หน่วง ไม่หนืด
                 max_step_w = a_rot * dt_loop
 
                 if diff_w_mag <= max_step_w:
@@ -1230,22 +1338,34 @@ if __name__ == "__main__":
                 cmd_total_rot = math.sqrt(cur_w[0]**2 + cur_w[1]**2 + cur_w[2]**2)
 
                 if cmd_total_spd > 1e-4 or cmd_total_rot > 1e-4:
-                    # ส่ง speedL ไปยังคอนโทรลเลอร์ UR3e โดยเปิด Headroom อัตราเร่ง 1.25 m/s²
-                    # เพื่อให้หุ่นยนต์ตามเส้นทาง Smooth S-curve ที่คำนวณไว้อย่างแม่นยำ 100% ไร้แรงกระชากและไร้หน่วง
-                    exec_accel = 1.25 if is_pose_mode else cur_smooth_accel
+                    # ด่านตรวจความปลอดภัยเด็ดขาดก่อนส่ง speedL: สเกลความเร็วไม่ให้ข้อต่อใดเกินเพดาน JOINT_MAX_SPEEDS เด็ดขาด
+                    J_check, _ = compute_ur3e_jacobian(current_q)
+                    qd_check = solve_dls_system(J_check, current_cart_cmd, damping=0.025)
+                    arm_viol_scales = [JOINT_MAX_SPEEDS[j] / abs(qd_check[j]) for j in range(3) if abs(qd_check[j]) > JOINT_MAX_SPEEDS[j]]
+                    wrist_viol_scales = [JOINT_MAX_SPEEDS[j] / abs(qd_check[j]) for j in range(3, 6) if abs(qd_check[j]) > JOINT_MAX_SPEEDS[j]]
+                    if arm_viol_scales:
+                        min_arm_s = min(arm_viol_scales)
+                        current_cart_cmd = [c * min_arm_s for c in current_cart_cmd]
+                    elif wrist_viol_scales:
+                        min_wrist_s = min(wrist_viol_scales)
+                        current_cart_cmd[3] *= min_wrist_s
+                        current_cart_cmd[4] *= min_wrist_s
+                        current_cart_cmd[5] *= min_wrist_s
+
+                    exec_accel = 2.40 if is_pose_mode else cur_smooth_accel
                     rtde_c.speedL(current_cart_cmd, exec_accel, STREAM_TIME_BUFFER)
                     was_moving_arm = True
                 else:
                     current_cart_cmd = [0.0] * 6
                     if was_moving_arm:
-                        # หยุดสนิทอย่างนุ่มนวลด้วยอัตราเร่ง 0.40 m/s² เพื่อป้องกันแรงกระแทกกลไกเกียร์ของ UR3e (Base joint wobble)
-                        rtde_c.speedStop(0.40)
+                        # หยุดสนิทอย่างมั่นคงด้วย speedStop (2.0 m/s²) เพื่อล็อกตำแหน่งนิ่งสนิท ไร้การสวิง
+                        rtde_c.speedStop(2.0)
                         was_moving_arm = False
 
             elif was_moving_arm:
                 current_stream_qd = [0.0] * 6
                 current_cart_cmd = [0.0] * 6
-                rtde_c.speedStop(0.40)
+                rtde_c.speedStop(2.0)
                 was_moving_arm = False
 
             # 7. อ่านค่า Force ทุกรอบ 50 Hz และกรองผ่าน Unscented Kalman Filter (UKF)
@@ -1259,14 +1379,34 @@ if __name__ == "__main__":
             else:
                 clean_force = 0.0
 
+            # ป้องกันแรงสั่นหลอน (Spurious Vibration) ขณะมืออ้าหรือแขนกลเคลื่อนที่ในอากาศ:
+            # หาก Gripper เปิดอยู่ (cached_gripper_pos <= 35) และไม่มีการสั่งหนีบจาก VR จะตัดแรงเป็น 0.0 ทันที
+            with vr_vel_lock:
+                current_vr_grip_cmd = vr_hand_state.get("grip_pos", 0)
+            if cached_gripper_pos <= 35 and current_vr_grip_cmd <= 35:
+                clean_force = 0.0
+            elif getattr(gripper, 'contact_detected', False):
+                # หาก Gripper หนีบโดนวัตถุแน่น (OBJ 2) ให้ผสานแรงบีบจริงเข้ากับแรงกระทำภายนอก
+                contact_force_floor = 18.0 + (GRIPPER_FORCE / 255.0) * (25.0 - 18.0)
+                clean_force = max(clean_force, contact_force_floor)
+
             smooth_grip_force = ukf_force.update(clean_force)
             if clean_force == 0.0 and smooth_grip_force < 0.08:
                 smooth_grip_force = 0.0
 
-            # ส่ง Smooth Force Feedback (ผ่าน UKF) กลับไปให้ Unity VR Headset และถุงมือ bHaptics Glove ทุกรอบ 50 Hz พร้อมแจ้งระดับความเร็วและพิกัดจริง
+            # ส่ง Smooth Force Feedback (ผ่าน UKF) กลับไปให้ Unity VR Headset และถุงมือ bHaptics Glove ทุกรอบ 50 Hz
+            # พร้อมแจ้งระดับความเร็ว พิกัดจริง และอัตราส่วนความใกล้ขอบเขตความปลอดภัย (Safety Proximity)
             speed_pct = int(round(speed_level * 100))
+            qd_for_safety = rtde_r.getActualQd()
+            safety_prox = compute_safety_proximity(current_pose, current_q, qd_for_safety)
             if 'vr_server' in locals() and vr_server:
-                vr_server.send_feedback(cached_gripper_pos, smooth_grip_force, speed_pct, actual_tcp_pose=current_pose)
+                vr_server.send_feedback(cached_gripper_pos, smooth_grip_force, speed_pct, actual_tcp_pose=current_pose, safety_proximity=safety_prox)
+                if 'safety_reason' in locals() and safety_reason != "OK":
+                    vr_server.send_alert("WARNING", safety_reason)
+                elif safety_prox.get("rot_limit_ratio", 0.0) > 0.05:
+                    w_j = safety_prox.get("worst_joint_name", "Wrist")
+                    deg_l = safety_prox.get("worst_deg_left", 0.0)
+                    vr_server.send_alert("WARNING", f"ROTATION LIMIT WARNING: {w_j} near rotation limit ({deg_l:.1f}° remaining) - Decelerating")
 
             current_time = time.time()
             if current_time - last_force_print >= FORCE_PRINT_INTERVAL:

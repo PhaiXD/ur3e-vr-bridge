@@ -28,6 +28,7 @@ def run_simulation_tests():
 
     test_results = {}
     received_home = False
+    received_shake = False
     latest_pose_cmd = None
     server_feedback = []
 
@@ -45,7 +46,12 @@ def run_simulation_tests():
     def on_home():
         nonlocal received_home
         received_home = True
-        print("   [Server Callback] 🏠 ได้รับคำสั่ง HOME จากการจีบมือซ้าย 3 วินาที!")
+        print("   [Server Callback] 🏠 ได้รับคำสั่ง HOME จากการจีบมือซ้าย 3 วินาที หรือกดปุ่ม [X] บนรีโมทซ้าย!")
+
+    def on_shake():
+        nonlocal received_shake
+        received_shake = True
+        print("   [Server Callback] 🧪 ได้รับคำสั่ง SHAKE จาก Left Thumbstick บนรีโมทซ้าย!")
 
     # เริ่ม VR Bridge Server จำลอง
     TEST_PORT = 5557  # ใช้พอร์ตทดสอบเพื่อไม่ชนกับพอร์ต 5555
@@ -54,7 +60,8 @@ def run_simulation_tests():
         on_grip_callback=on_grip,
         on_move_callback=on_move,
         on_pose_callback=on_pose,
-        on_home_callback=on_home
+        on_home_callback=on_home,
+        on_shake_callback=on_shake
     )
     server.start()
     time.sleep(0.3)
@@ -285,6 +292,75 @@ def run_simulation_tests():
         print("✅ PASS: เปลี่ยนทิศทางเร็วๆ ตอบสนองฉับไว ไร้ความหน่วงหนืด และไร้แรงกระชาก 100%")
     else:
         print("❌ FAIL: Turnaround Time นานเกินไป")
+
+    # -------------------------------------------------------------
+    # ขั้นที่ 8: ทดสอบการส่งคำเตือนฉุกเฉินและ Safety Alert (send_alert)
+    # -------------------------------------------------------------
+    print("\n[ขั้นที่ 8] ทดสอบระบบแจ้งเตือนฉุกเฉินและข้อผิดพลาด (ALERT Warning / Error Broadcast)")
+    server.send_alert("WARNING", "Reach near outer safety boundary (0.70m)")
+    time.sleep(0.05)
+    server.send_alert("ERROR", "Protective Stop Triggered!")
+    time.sleep(0.05)
+
+    alert_data = client.recv(1024).decode("utf-8", errors="ignore")
+    has_warning = "ALERT WARNING Reach near outer safety boundary" in alert_data
+    has_error = "ALERT ERROR Protective Stop Triggered!" in alert_data
+    alerts_ok = has_warning and has_error
+
+    test_results["Safety_Alert_Broadcast"] = alerts_ok
+    if alerts_ok:
+        print("✅ PASS: ส่งข้อความแจ้งเตือน WARNING และ ERROR ถึง Client สำเร็จ 100%")
+    else:
+        print(f"❌ FAIL: ไม่ได้รับข้อความแจ้งเตือนที่ถูกต้อง (Received: {alert_data})")
+
+    # -------------------------------------------------------------
+    # ขั้นที่ 9: ทดสอบคำสั่ง SHAKE (เขย่าสารอัตโนมัติจาก Left Thumbstick)
+    # -------------------------------------------------------------
+    print("\n[ขั้นที่ 9] ทดสอบคำสั่ง SHAKE จาก Left Thumbstick (เขย่าสารอัตโนมัติ 3 รอบ)...")
+    client.sendall(b"SHAKE\n")
+    time.sleep(0.15)
+
+    test_results["Left_Thumbstick_SHAKE"] = received_shake
+    if received_shake:
+        print("✅ PASS: เซิร์ฟเวอร์ได้รับคำสั่ง SHAKE จากการกดก้านโยก Thumbstick ซ้าย สำเร็จ!")
+    else:
+        print("❌ FAIL: เซิร์ฟเวอร์ไม่ได้รับคำสั่ง SHAKE")
+
+    # -------------------------------------------------------------
+    # ขั้นที่ 10: ทดสอบการชะลอความเร็วเมื่อหมุนใกล้ครบรอบ (Rotation Limit Deceleration & Haptic Warning)
+    # -------------------------------------------------------------
+    print("\n[ขั้นที่ 10] ทดสอบระบบชะลอความเร็วเมื่อหมุนใกล้ครบรอบ (20-30° Before Rotation Limit)...")
+    from robot_safety import compute_safety_proximity, filter_joint_velocity
+
+    # 1. จำลองมุมข้อต่อเมื่อ Wrist 3 หมุนไปที่ 345° (เหลือ 15° จาก Limit 360°)
+    q_near_limit = [0.0, -math.pi/2, -math.pi/2, -math.pi, -math.pi/2, math.radians(345.0)]
+    safety_prox = compute_safety_proximity([0.3, -0.1, 0.3, 0, 0, 0], current_q=q_near_limit)
+
+    rot_ratio = safety_prox.get("rot_limit_ratio", 0.0)
+    worst_j = safety_prox.get("worst_joint_name", "")
+    deg_left = safety_prox.get("worst_deg_left", 999.0)
+
+    print(f"   ตรวจพบข้อต่อเข้าใกล้ขอบเขต: {worst_j} (เหลือ {deg_left:.1f}° จาก 360°)")
+    print(f"   อัตราส่วน Proximity Ratio: {rot_ratio:.3f} (เริ่มสั่นเตือนที่ข้อมือ bHaptics)")
+
+    # 2. ตรวจสอบการชะลอความเร็วในทิศทางที่ฝืนเข้าหาขอบเขต (q_dot > 0)
+    test_qd = [0.0, 0.0, 0.0, 0.0, 0.0, 1.0] # หมุน Wrist 3 ไปข้างหน้า +1.0 rad/s
+    filtered_qd, reason = filter_joint_velocity(test_qd, q_near_limit)
+    decel_scale = filtered_qd[5] / test_qd[5]
+    print(f"   ความเร็วหมุนฝืนต่อ: จาก {test_qd[5]:.2f} rad/s ชะลอลงเหลือ {filtered_qd[5]:.2f} rad/s (สเกล {decel_scale*100:.1f}%)")
+
+    # 3. ตรวจสอบการหมุนถอยกลับ (q_dot < 0) ต้องหมุนถอยได้ 100% เต็มพิกัด
+    reverse_qd = [0.0, 0.0, 0.0, 0.0, 0.0, -1.0]
+    filtered_rev, _ = filter_joint_velocity(reverse_qd, q_near_limit)
+    rev_scale = filtered_rev[5] / reverse_qd[5]
+    print(f"   ความเร็วหมุนถอยกลับ: {filtered_rev[5]:.2f} rad/s (ถอยกลับได้เต็ม {rev_scale*100:.0f}%)")
+
+    step10_ok = (rot_ratio > 0.40) and (0.3 < decel_scale < 0.7) and (abs(rev_scale - 1.0) < 1e-4)
+    test_results["Rotation_Limit_Deceleration"] = step10_ok
+    if step10_ok:
+        print("✅ PASS: ชะลอความเร็วนุ่มนวลในโซน 20-30° ก่อนชน Limit และหมุนถอยกลับได้ 100% เต็มสปีด")
+    else:
+        print(f"❌ FAIL: การชะลอความเร็วไม่ถูกต้อง (scale={decel_scale:.2f})")
 
     # ปิดการเชื่อมต่อ
     client.close()

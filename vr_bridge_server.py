@@ -22,7 +22,7 @@ class VRBridgeServer:
     - รับคำสั่ง: 'MOVE <vx> <vy> <vz> [wx] [wy] [wz]\n' (ความเร็ว 6-DOF จากมือ VR, หน่วย m/s และ rad/s)
     - ส่งสถานะกลับ: 'STATUS <pos> <force_n>\n'
     """
-    def __init__(self, host=DEFAULT_HOST, port=DEFAULT_PORT, on_grip_callback=None, on_move_callback=None, on_tare_callback=None, on_pose_callback=None, on_home_callback=None):
+    def __init__(self, host=DEFAULT_HOST, port=DEFAULT_PORT, on_grip_callback=None, on_move_callback=None, on_tare_callback=None, on_pose_callback=None, on_home_callback=None, on_shake_callback=None):
         self.host = host
         self.port = port
         self.on_grip_callback = on_grip_callback
@@ -30,6 +30,7 @@ class VRBridgeServer:
         self.on_tare_callback = on_tare_callback
         self.on_pose_callback = on_pose_callback
         self.on_home_callback = on_home_callback
+        self.on_shake_callback = on_shake_callback
         self.server_sock = None
         self.client_sock = None
         self.running = False
@@ -38,6 +39,8 @@ class VRBridgeServer:
         self.latest_force = 0.0
         self.latest_vel = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # vx, vy, vz, wx, wy, wz จาก VR
         self.latest_target_pose = None                     # [x, y, z, rx, ry, rz] Target Pose จาก VR
+        self.is_teleop_paused = False                      # Pause teleoperation freeze state
+        self.on_pause_callback = None
         self.client_address = None
 
     def start(self):
@@ -66,17 +69,54 @@ class VRBridgeServer:
             self.server_sock = None
         print("🛑 [VR Bridge] ปิด TCP Server เรียบร้อย")
 
-    def send_feedback(self, actual_pos, force_n, speed_pct=100, actual_tcp_pose=None):
-        """ ส่งข้อมูลแรงบีบ ตำแหน่งจริง ระดับความเร็ว (Speed %) และพิกัดจริงของหุ่นยนต์ (Actual TCP Pose) กลับไปให้ Unity """
+    def send_feedback(self, actual_pos, force_n, speed_pct=100, actual_tcp_pose=None, safety_proximity=None):
+        """
+        ส่งข้อมูลแรงบีบ ตำแหน่งจริง ระดับความเร็ว (Speed %) พิกัดจริง (Actual TCP Pose)
+        และอัตราส่วนความใกล้ขอบเขตความปลอดภัย (Safety Proximity Ratios) กลับไปให้ Unity
+        Format: STATUS <pos> <force> <speed%> <x> <y> <z> <rx> <ry> <rz> [<outer_r> <inner_r> <cyl_r> <spd_r>]
+        """
         if not self.client_sock:
             return
         try:
             if actual_tcp_pose is not None and len(actual_tcp_pose) >= 6:
                 x, y, z, rx, ry, rz = actual_tcp_pose[:6]
-                msg = f"STATUS {int(actual_pos)} {float(force_n):.2f} {int(speed_pct)} {x:.4f} {y:.4f} {z:.4f} {rx:.4f} {ry:.4f} {rz:.4f}\n"
+                base_msg = f"STATUS {int(actual_pos)} {float(force_n):.2f} {int(speed_pct)} {x:.4f} {y:.4f} {z:.4f} {rx:.4f} {ry:.4f} {rz:.4f}"
+                # Append safety proximity ratios if available (including Joint Rotation Limits)
+                if safety_proximity is not None:
+                    o_r = safety_proximity.get("outer_ratio", 0.0)
+                    i_r = safety_proximity.get("inner_ratio", 0.0)
+                    c_r = safety_proximity.get("cylinder_ratio", 0.0)
+                    s_r = safety_proximity.get("speed_ratio", 0.0)
+                    rot_r = safety_proximity.get("rot_limit_ratio", 0.0)
+                    j_idx = safety_proximity.get("worst_joint_idx", 5)
+                    deg_left = safety_proximity.get("worst_deg_left", 999.0)
+                    msg = f"{base_msg} {o_r:.3f} {i_r:.3f} {c_r:.3f} {s_r:.3f} {rot_r:.3f} {int(j_idx)} {deg_left:.1f}\n"
+                else:
+                    msg = f"{base_msg}\n"
             else:
                 msg = f"STATUS {int(actual_pos)} {float(force_n):.2f} {int(speed_pct)}\n"
             self.client_sock.sendall(msg.encode("ascii"))
+        except Exception:
+            pass
+
+    def send_alert(self, level, message):
+        """
+        ส่งข้อความแจ้งเตือนหรือ Error (ALERT WARNING/ERROR <msg>) ไปยัง Unity แบบ UTF-8
+        """
+        if not self.client_sock:
+            return
+        try:
+            clean_msg = str(message).replace("\n", " ").strip()
+            now = time.time()
+            if not hasattr(self, "_last_alert_msg"):
+                self._last_alert_msg = ""
+                self._last_alert_time = 0.0
+            if clean_msg == self._last_alert_msg and (now - self._last_alert_time) < 1.5:
+                return
+            self._last_alert_msg = clean_msg
+            self._last_alert_time = now
+            msg = f"ALERT {level} {clean_msg}\n"
+            self.client_sock.sendall(msg.encode("utf-8"))
         except Exception:
             pass
 
@@ -146,6 +186,24 @@ class VRBridgeServer:
                                         self.on_home_callback()
                                     except Exception as ex:
                                         print(f"⚠️ [VR Bridge] on_home_callback error: {ex}")
+                            elif line.startswith("SHAKE"):
+                                if self.on_shake_callback:
+                                    try:
+                                        self.on_shake_callback()
+                                    except Exception as ex:
+                                        print(f"⚠️ [VR Bridge] on_shake_callback error: {ex}")
+                            elif line.startswith("PAUSE"):
+                                parts = line.split()
+                                if len(parts) >= 2:
+                                    self.is_teleop_paused = (parts[1].strip() == "1")
+                                else:
+                                    self.is_teleop_paused = not self.is_teleop_paused
+                                print(f"⏸️ [VR Bridge] Teleoperation Pause state: {self.is_teleop_paused}")
+                                if self.on_pause_callback:
+                                    try:
+                                        self.on_pause_callback(self.is_teleop_paused)
+                                    except Exception as ex:
+                                        print(f"⚠️ [VR Bridge] on_pause_callback error: {ex}")
 
                         # 1. ประมวลผลคำสั่ง 'GRIP' ล่าสุดในรอบนี้ (ตัดคำสั่งเก่าตกค้าง ป้องกัน Delay)
                         if latest_grip_cmd:
@@ -210,7 +268,8 @@ class VRBridgeServer:
                     except socket.timeout:
                         continue
                     except Exception as ex:
-                        print(f"⚠️ [VR Bridge] Client read error: {ex}")
+                        if self.running:
+                            print(f"⚠️ [VR Bridge] Client read error: {ex}")
                         break
 
                 if self.client_sock:
