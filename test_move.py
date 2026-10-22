@@ -1181,8 +1181,7 @@ if __name__ == "__main__":
                 qd_wrist = [0.0] * 6
                 current_stream_qd = [0.0] * 6
                 current_cart_cmd = [0.0] * 6
-                with vr_pose_lock:
-                    vr_pose_state["target_pose"] = None
+                vr_pose_state["target_pose"] = None
                 if was_moving_arm:
                     try:
                         rtde_c.speedStop(STOP_ACCEL)
