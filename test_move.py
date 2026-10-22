@@ -635,6 +635,8 @@ if __name__ == "__main__":
                 vr_vel[5] = wz
 
         def on_vr_grip(p):
+            if vr_server is not None and getattr(vr_server, 'is_teleop_paused', False):
+                return
             with vr_vel_lock:
                 vr_hand_state["grip_pos"] = p
             gripper.set_position(p)
@@ -753,6 +755,7 @@ if __name__ == "__main__":
         was_moving_arm = False
         gripper_moving_close = False
         gripper_moving_open = False
+        was_teleop_paused = False
         prev_h_pressed = False
         prev_k_pressed = False
         prev_1_pressed = False
@@ -961,8 +964,13 @@ if __name__ == "__main__":
             prev_comma_pressed = p_comma
 
             # 5. ควบคุม Gripper (กดค้าง = เคลื่อนที่ต่อเนื่อง, ปล่อย = หยุดทันที)
-            eq_pressed = keyboard.is_pressed('=') or keyboard.is_pressed('+')
-            minus_pressed = keyboard.is_pressed('-') or keyboard.is_pressed('_')
+            # หากอยู่ในสถานะ Pause ให้ระงับการสั่งงาน Gripper ทั้งหมด
+            if getattr(vr_server, 'is_teleop_paused', False):
+                eq_pressed = False
+                minus_pressed = False
+            else:
+                eq_pressed = keyboard.is_pressed('=') or keyboard.is_pressed('+')
+                minus_pressed = keyboard.is_pressed('-') or keyboard.is_pressed('_')
 
             if eq_pressed:
                 if not gripper_moving_close:
@@ -1175,8 +1183,9 @@ if __name__ == "__main__":
             # ตรวจสอบและสั่งการเคลื่อนที่ (Joint Space: speedJ / Cartesian Space: speedL)
             # ------------------------------------------------------------
             # ด่านตรวจ Pause จากปุ่ม Y บน Meta Quest Touch Remote:
-            # หากอยู่ในสถานะ Pause ให้ตัดความเร็วทั้งหมดเป็น 0, เคลียร์ Target Pose และหยุดแขนกลทันที
-            if getattr(vr_server, 'is_teleop_paused', False):
+            # หากอยู่ในสถานะ Pause ให้ตัดความเร็วทั้งหมดเป็น 0, เคลียร์ Target Pose, หยุดแขนกล และหยุด Gripper ทันที
+            is_paused_now = getattr(vr_server, 'is_teleop_paused', False)
+            if is_paused_now:
                 vx = vy = vz = wx = wy = wz = 0.0
                 qd_wrist = [0.0] * 6
                 current_stream_qd = [0.0] * 6
@@ -1188,6 +1197,13 @@ if __name__ == "__main__":
                     except Exception:
                         pass
                     was_moving_arm = False
+                if not was_teleop_paused:
+                    # เพิ่งเข้าสู่สถานะ Pause -> สั่งหยุด Gripper ทันทีเพื่อความปลอดภัย
+                    try:
+                        gripper.stop()
+                    except Exception:
+                        pass
+            was_teleop_paused = is_paused_now
 
             is_wrist_moving = any(q != 0.0 for q in qd_wrist)
             is_cart_moving = (vx != 0.0 or vy != 0.0 or vz != 0.0 or wx != 0.0 or wy != 0.0 or wz != 0.0)
