@@ -1,0 +1,735 @@
+using System.Collections.Generic;
+using System;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading;
+using UnityEngine;
+
+namespace UR3eVR
+{
+    /// <summary>
+    /// GripperBridge: à¸ªà¹ˆà¸‡à¸„à¸³à¸ªà¸±à¹ˆà¸‡ GRIP à¹à¸¥à¸° MOVE (6-DOF) à¹„à¸›à¸¢à¸±à¸‡ Python vr_bridge_server.py à¸œà¹ˆà¸²à¸™ TCP
+    /// </summary>
+        [System.Serializable]
+    public struct SystemAlert
+    {
+        public string Level;
+        public string Message;
+        public DateTime Timestamp;
+
+        public SystemAlert(string level, string message)
+        {
+            Level = level;
+            Message = message;
+            Timestamp = DateTime.Now;
+        }
+    }
+
+    public class GripperBridge : MonoBehaviour
+    {
+                public static event Action<string, string> OnAlertReceived;
+        public static event Action<string> OnLogReceived;
+        [System.NonSerialized] public List<SystemAlert> recentAlerts = new List<SystemAlert>();
+        private readonly Queue<SystemAlert> pendingAlertsQueue = new Queue<SystemAlert>();
+        private readonly object alertLock = new object();
+        [Header("VRHandMover Reference (Auto-detected)")]
+        public VRHandMover vrHandMover;
+
+        [Header("Network Settings")]
+        [Tooltip("IP Address ของเครื่องที่รัน test_move.py หรือ vr_bridge_server.py")]
+        public string serverIp = "127.0.0.1";
+
+        [Tooltip("Port ของ VR Bridge Server (default: 5555)")]
+        public int serverPort = 5555;
+
+        [Tooltip("อัตราการส่งข้อมูลสูงสุด (Hz) ปรับลดเพื่อแก้ปัญหา Delay")]
+        [Range(5, 30)]
+        public int sendRateHz = 50;
+
+        [Header("Significant Change Thresholds (ส่งเฉพาะจุดที่มีนัยสำคัญ)")]
+        [Tooltip("ระยะเคลื่อนที่ขั้นต่ำที่มีนัยสำคัญ (เมตร): เช่น 0.0015 = 1.5 mm หากขยับน้อยกว่านี้จะไม่ส่งซ้ำซ้อน")]
+        [Range(0.0005f, 0.01f)]
+        public float posChangeThreshold = 0.0006f; // 1.5 mm
+
+        [Tooltip("องศาการหมุนข้อมือขั้นต่ำที่มีนัยสำคัญ (องศา): เช่น 0.8 องศา")]
+        [Range(0.2f, 3.0f)]
+        public float rotChangeThreshold = 0.35f; // 0.8 degrees
+
+        [Tooltip("ช่วงเวลาส่ง Heartbeat ซ้ำเมื่อมือนิ่งสนิท (วินาที)")]
+        [Range(0.5f, 3.0f)]
+        public float heartbeatIntervalSec = 0.12f;
+
+        [Header("Reference")]
+        [Tooltip("PinchDetector component (auto-detected if null)")]
+        public PinchDetector pinchDetector;
+
+        [Header("Gripper Settings")]
+        [Tooltip("Deadband ป้องกันการส่งค่าซ้ำๆ")]
+        [Range(1, 10)]
+        public int deadband = 3;
+
+        [Header("Live Status (Read Only)")]
+        public bool isConnected = false;
+        public int lastSentPos = -1;
+        public int actualGripperPos = 0;
+        public float actualGripForce = 0.0f;
+        public string lastStatus = "Disconnected";
+        public string lastReceivedMessage = "";
+        public int currentSpeedPct = 100;
+
+        [Header("Gripper Lock State")]
+        [Tooltip("สถานะล็อกระดับการหนีบของ Gripper")]
+        public bool isGripperLocked = false;
+        public int lockedGripPos = 0;
+        private bool wasRightGripPressed = false; // Edge detection for grip button toggle
+
+        [Header("Robot Pose Feedback (Read Only)")]
+        public Vector3 actualRobotPos = Vector3.zero;
+        public Vector3 actualRobotRot = Vector3.zero; // Axis-Angle (rad)
+        public bool hasReceivedRobotPose = false;
+
+        [Header("Safety Proximity Ratios (0.0=safe, 1.0=at boundary)")]
+        [Tooltip("Outer sphere proximity (0=center, 1=at max reach boundary)")]
+        [Range(0f, 1f)] public float safetyOuterRatio = 0f;
+        [Tooltip("Inner sphere proximity (0=far, 1=at self-collision boundary)")]
+        [Range(0f, 1f)] public float safetyInnerRatio = 0f;
+        [Tooltip("Cylinder proximity (0=far from Z-axis, 1=at singularity zone)")]
+        [Range(0f, 1f)] public float safetyCylinderRatio = 0f;
+        [Tooltip("Speed proximity (0=slow, 1=at max joint speed)")]
+        [Range(0f, 1f)] public float safetySpeedRatio = 0f;
+
+        [Header("Joint Rotation Limit Proximity (Near Full Turn / Max Limit)")]
+        [Tooltip("Joint rotation limit proximity (0=safe, 1=at rotation limit)")]
+        [Range(0f, 1f)] public float safetyRotLimitRatio = 0f;
+        public int safetyRotLimitJointIdx = 5;
+        public float safetyRotLimitDegLeft = 999f;
+
+        public static readonly string[] JointNames = new string[] {
+            "Base (J1)", "Shoulder (J2)", "Elbow (J3)", "Wrist 1 (J4)", "Wrist 2 (J5)", "Wrist 3 (J6)"
+        };
+
+        public string safetyRotLimitJointName
+        {
+            get
+            {
+                if (safetyRotLimitJointIdx >= 0 && safetyRotLimitJointIdx < JointNames.Length)
+                    return JointNames[safetyRotLimitJointIdx];
+                return "Wrist 3 (J6)";
+            }
+        }
+
+        // Robot Arm Target Pose (6-DOF: Absolute / Anchor-based)
+        private float targetPx = 0f;
+        private float targetPy = 0f;
+        private float targetPz = 0f;
+        private float targetPrx = 0f;
+        private float targetPry = 0f;
+        private float targetPrz = 0f;
+        private bool newPoseAvailable = false;
+
+        [Header("Auto-Tare (Calibrate Fz when opening fingers)")]
+        [Tooltip("ระดับตำแหน่งอ้านิ้วที่จะสั่ง Tare Fz อัตโนมัติ (default: 35)")]
+        [Range(10, 80)]
+        public int autoTareThreshold = 35;
+        public bool isCalibratedAtOpen = false;
+        private bool rearmedForTare = false;
+        private bool tareRequested = false;
+        private bool homeRequested = false;
+        private bool shakeRequested = false;
+        private bool pauseRequested = false;
+        private bool pauseTargetState = false;
+
+        // Internal
+        private Thread networkThread;
+        private bool isRunning = false;
+        private readonly object lockObj = new object();
+        private int targetGripPos = 0;
+        private bool newPosAvailable = false;
+
+        // Robot Arm Velocity (6-DOF: Linear + Angular)
+        private float targetVx = 0f;
+        private float targetVy = 0f;
+        private float targetVz = 0f;
+        private float targetWx = 0f;
+        private float targetWy = 0f;
+        private float targetWz = 0f;
+        private bool newVelAvailable = false;
+
+        private void Awake()
+        {
+            if (pinchDetector == null)
+            {
+                pinchDetector = GetComponent<PinchDetector>();
+                if (pinchDetector == null) pinchDetector = FindAnyObjectByType<PinchDetector>();
+            }
+        }
+
+        private void OnEnable()
+        {
+            StartNetworkThread();
+        }
+
+        private void OnDisable()
+        {
+            StopNetworkThread();
+        }
+
+        private void OnDestroy()
+        {
+            StopNetworkThread();
+        }
+
+        private void Update()
+        {
+            // 1. Dispatch pending alerts received from network thread to main thread
+            lock (alertLock)
+            {
+                while (pendingAlertsQueue.Count > 0)
+                {
+                    var alert = pendingAlertsQueue.Dequeue();
+                    recentAlerts.Add(alert);
+                    if (recentAlerts.Count > 100) recentAlerts.RemoveAt(0);
+                    OnAlertReceived?.Invoke(alert.Level, alert.Message);
+                }
+            }
+
+            // 2. Read Gripper input: Touch Controller Index Trigger or Bare Hand Pinch
+            // Determine whether user is holding Touch Controller or using Bare Hand Tracking
+            if (vrHandMover == null)
+            {
+                vrHandMover = VRHandMover.Instance != null ? VRHandMover.Instance : FindAnyObjectByType<VRHandMover>();
+            }
+
+            bool usingController = false;
+            if (vrHandMover != null && vrHandMover.isUsingController)
+            {
+                usingController = true;
+            }
+            else
+            {
+                var activeCtrl = OVRInput.GetActiveController();
+                usingController = (activeCtrl == OVRInput.Controller.RTouch || activeCtrl == OVRInput.Controller.Touch);
+            }
+
+            if (usingController)
+            {
+                float triggerVal = OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, OVRInput.Controller.RTouch);
+                int currentPos = Mathf.RoundToInt(triggerVal * 255f);
+
+                if (!isGripperLocked)
+                {
+                    if (Mathf.Abs(currentPos - lastSentPos) >= deadband)
+                    {
+                        SetTargetPos(currentPos);
+                    }
+
+                    // Auto-Tare when opening trigger fully (<= autoTareThreshold)
+                    if (currentPos >= 42)
+                    {
+                        rearmedForTare = true;
+                        isCalibratedAtOpen = false;
+                    }
+                    else if (rearmedForTare && currentPos <= autoTareThreshold)
+                    {
+                        rearmedForTare = false;
+                        isCalibratedAtOpen = true;
+                        RequestTare();
+                    }
+                }
+                else
+                {
+                    if (lastSentPos != lockedGripPos)
+                    {
+                        SetTargetPos(lockedGripPos);
+                    }
+                }
+
+                // Toggle Gripper Lock with Grip Button (Hand Trigger / middle finger squeeze) on Right Touch Controller
+                // Uses edge detection: trigger when grip crosses 0.7 threshold rising edge
+                float rightGripVal = OVRInput.Get(OVRInput.Axis1D.PrimaryHandTrigger, OVRInput.Controller.RTouch);
+                bool rightGripPressed = (rightGripVal >= 0.7f);
+                if (rightGripPressed && !wasRightGripPressed)
+                {
+                    ToggleGripperLock();
+                }
+                wasRightGripPressed = rightGripPressed;
+            }
+            else if (pinchDetector != null && pinchDetector.isTracked)
+            {
+                if (!isGripperLocked)
+                {
+                    int currentPos = pinchDetector.gripperPos;
+                    if (Mathf.Abs(currentPos - lastSentPos) >= deadband)
+                    {
+                        SetTargetPos(currentPos);
+                    }
+
+                    if (currentPos >= 42)
+                    {
+                        rearmedForTare = true;
+                        isCalibratedAtOpen = false;
+                    }
+                    else if (rearmedForTare && currentPos <= autoTareThreshold)
+                    {
+                        rearmedForTare = false;
+                        isCalibratedAtOpen = true;
+                        RequestTare();
+                    }
+                }
+                else
+                {
+                    if (lastSentPos != lockedGripPos)
+                    {
+                        SetTargetPos(lockedGripPos);
+                    }
+                }
+            }
+        }
+
+        public void SetTargetPos(int pos)
+        {
+            lock (lockObj)
+            {
+                targetGripPos = Mathf.Clamp(pos, 0, 255);
+                newPosAvailable = true;
+            }
+        }
+        public void RequestTare()
+        {
+            lock (lockObj)
+            {
+                tareRequested = true;
+            }
+            Debug.Log(string.Format("[GripperBridge] Auto-Tare Requested: Fingers opened to <= {0}/255", autoTareThreshold));
+        }
+
+        /// <summary>
+        /// à¸ªà¸±à¹ˆà¸‡à¸«à¸¸à¹ˆà¸™à¸¢à¸™à¸•à¹Œ UR3e à¸à¸¥à¸±à¸šà¸ªà¸¹à¹ˆ Safe Home à¹€à¸¡à¸·à¹ˆà¸­à¸ˆà¸µà¸šà¸¡à¸·à¸­à¸‹à¹‰à¸²à¸¢à¸„à¹‰à¸²à¸‡ 3 à¸§à¸´à¸™à¸²à¸—à¸µ
+        /// </summary>
+        public bool ToggleGripperLock()
+        {
+            isGripperLocked = !isGripperLocked;
+            if (isGripperLocked)
+            {
+                if (pinchDetector != null && pinchDetector.isTracked)
+                    lockedGripPos = pinchDetector.gripperPos;
+                else
+                    lockedGripPos = lastSentPos >= 0 ? lastSentPos : 0;
+
+                SetTargetPos(lockedGripPos);
+                Debug.Log(string.Format("[GripperBridge] Gripper LOCKED at {0}/255", lockedGripPos));
+            }
+            else
+            {
+                Debug.Log("[GripperBridge] Gripper UNLOCKED");
+            }
+            return isGripperLocked;
+        }
+
+        public void SetGripperLock(bool locked)
+        {
+            if (isGripperLocked == locked) return;
+            ToggleGripperLock();
+        }
+
+        public void RequestHome()
+        {
+            lock (lockObj)
+            {
+                homeRequested = true;
+            }
+            Debug.Log("[GripperBridge] ðŸ  RequestHome: Sending HOME command to UR3e robot...");
+        }
+
+        public void RequestShake()
+        {
+            lock (lockObj)
+            {
+                shakeRequested = true;
+            }
+            Debug.Log("[GripperBridge] RequestShake: Sending SHAKE command to UR3e robot...");
+        }
+
+        /// <summary>
+        /// à¸£à¸±à¸šà¸„à¸§à¸²à¸¡à¹€à¸£à¹‡à¸§ 6-DOF à¸ˆà¸²à¸ VRHandMover à¹à¸¥à¹‰à¸§à¸ªà¹ˆà¸‡à¹„à¸› Python à¹€à¸›à¹‡à¸™à¸„à¸³à¸ªà¸±à¹ˆà¸‡ MOVE
+        /// </summary>
+        /// <summary>
+        /// à¸•à¸±à¹‰à¸‡à¸„à¹ˆà¸² Target Pose 6-DOF (Cartesian X, Y, Z à¹à¸¥à¸° Orientation Rx, Ry, Rz) à¸ªà¸³à¸«à¸£à¸±à¸šà¸à¸²à¸£à¸•à¸´à¸”à¸•à¸²à¸¡à¸žà¸´à¸à¸±à¸”à¸ˆà¸£à¸´à¸‡
+        /// </summary>
+        public void SetTargetPose(float x, float y, float z, float rx, float ry, float rz)
+        {
+            lock (lockObj)
+            {
+                targetPx = x;
+                targetPy = y;
+                targetPz = z;
+                targetPrx = rx;
+                targetPry = ry;
+                targetPrz = rz;
+                newPoseAvailable = true;
+            }
+        }
+
+        public void SetTargetVelocity(float vx, float vy, float vz, float wx = 0f, float wy = 0f, float wz = 0f)
+        {
+            lock (lockObj)
+            {
+                targetVx = vx;
+                targetVy = vy;
+                targetVz = vz;
+                targetWx = wx;
+                targetWy = wy;
+                targetWz = wz;
+                newVelAvailable = true;
+            }
+        }
+
+        /// <summary>
+        /// Sends PAUSE command to Python UR3e bridge to freeze/resume robot teleoperation
+        /// </summary>
+        public void SendPause(bool isPaused)
+        {
+            lock (lockObj)
+            {
+                pauseTargetState = isPaused;
+                pauseRequested = true;
+            }
+            Debug.Log($"[GripperBridge] SendPause queued: {isPaused}");
+        }
+
+        private void StartNetworkThread()
+        {
+            if (networkThread != null && networkThread.IsAlive) return;
+
+            isRunning = true;
+            networkThread = new Thread(NetworkLoop)
+            {
+                IsBackground = true,
+                Name = "GripperBridge_TCP"
+            };
+            networkThread.Start();
+        }
+
+        private void StopNetworkThread()
+        {
+            isRunning = false;
+            if (networkThread != null && networkThread.IsAlive)
+            {
+                networkThread.Join(500);
+                networkThread = null;
+            }
+            isConnected = false;
+        }
+
+        private void NetworkLoop()
+        {
+            byte[] recvBuffer = new byte[1024];
+
+            while (isRunning)
+            {
+                TcpClient client = null;
+                NetworkStream stream = null;
+
+                try
+                {
+                    lastStatus = $"Connecting to {serverIp}:{serverPort}...";
+                    client = new TcpClient();
+                    client.NoDelay = true; // à¸›à¸´à¸” Nagle's Algorithm à¹€à¸žà¸·à¹ˆà¸­à¸ªà¹ˆà¸‡à¹à¸žà¹‡à¸à¹€à¸à¹‡à¸•à¸—à¸±à¸™à¸—à¸µ à¹„à¸£à¹‰ Buffer Delay!
+                    try { client.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.NoDelay, true); } catch { }
+                    var connectTask = client.ConnectAsync(serverIp, serverPort);
+                    
+                    // Wait up to 2 seconds for connection
+                    if (!connectTask.Wait(2000))
+                    {
+                        client.Close();
+                        Thread.Sleep(1000);
+                        continue;
+                    }
+
+                    stream = client.GetStream();
+                    stream.ReadTimeout = 50;
+                    isConnected = true;
+                    lastStatus = "Connected";
+
+                    int lastSentLocal = -1;
+                    DateTime lastSendTime = DateTime.UtcNow;
+
+                    Vector3 lastSentPosePos = new Vector3(-999f, -999f, -999f);
+                    Vector3 lastSentPoseRot = new Vector3(-999f, -999f, -999f);
+                    DateTime lastPoseSendTime = DateTime.MinValue;
+                    bool lastMoveWasZero = false;
+
+                    while (isRunning && client.Connected)
+                    {
+                        int minIntervalMs = Mathf.RoundToInt(1000f / sendRateHz);
+                        int posToSend = -1;
+                        bool shouldSend = false;
+
+                        lock (lockObj)
+                        {
+                            if (newPosAvailable || (DateTime.UtcNow - lastSendTime).TotalMilliseconds >= (heartbeatIntervalSec * 1000))
+                            {
+                                posToSend = targetGripPos;
+                                shouldSend = true;
+                                newPosAvailable = false;
+                            }
+                        }
+
+                        if (shouldSend && (posToSend != lastSentLocal || (DateTime.UtcNow - lastSendTime).TotalMilliseconds >= (heartbeatIntervalSec * 1000)))
+                        {
+                            string cmd = $"GRIP {posToSend}\n";
+                            byte[] bytes = Encoding.ASCII.GetBytes(cmd);
+                            stream.Write(bytes, 0, bytes.Length);
+                            stream.Flush();
+
+                            lastSentLocal = posToSend;
+                            lastSentPos = posToSend;
+                            lastSendTime = DateTime.UtcNow;
+                        }
+
+                        // à¸ªà¹ˆà¸‡à¸„à¸³à¸ªà¸±à¹ˆà¸‡ TARE à¹„à¸›à¸¢à¸±à¸‡ Python à¹€à¸¡à¸·à¹ˆà¸­à¸­à¹‰à¸²à¸™à¸´à¹‰à¸§ <= 35 (Auto-Tare Fz à¹€à¸«à¸¡à¸·à¸­à¸™à¸à¸” T)
+                        bool shouldTare = false;
+                        lock (lockObj)
+                        {
+                            if (tareRequested)
+                            {
+                                shouldTare = true;
+                                tareRequested = false;
+                            }
+                        }
+                        if (shouldTare)
+                        {
+                            byte[] tareBytes = Encoding.ASCII.GetBytes("TARE\n");
+                            stream.Write(tareBytes, 0, tareBytes.Length);
+                            stream.Flush();
+                        }
+
+                        // à¸ªà¹ˆà¸‡à¸„à¸³à¸ªà¸±à¹ˆà¸‡ HOME à¹„à¸›à¸¢à¸±à¸‡ Python à¹€à¸¡à¸·à¹ˆà¸­à¸ˆà¸µà¸šà¸¡à¸·à¸­à¸‹à¹‰à¸²à¸¢à¸„à¹‰à¸²à¸‡ 3 à¸§à¸´à¸™à¸²à¸—à¸µ
+                        bool shouldHome = false;
+                        lock (lockObj)
+                        {
+                            if (homeRequested)
+                            {
+                                shouldHome = true;
+                                homeRequested = false;
+                            }
+                        }
+                        if (shouldHome)
+                        {
+                            byte[] homeBytes = Encoding.ASCII.GetBytes("HOME\n");
+                            stream.Write(homeBytes, 0, homeBytes.Length);
+                            stream.Flush();
+                        }
+
+                        // Send SHAKE command to UR3e robot for automatic tube mixing
+                        bool shouldShake = false;
+                        lock (lockObj)
+                        {
+                            if (shakeRequested)
+                            {
+                                shouldShake = true;
+                                shakeRequested = false;
+                            }
+                        }
+                        if (shouldShake)
+                        {
+                            byte[] shakeBytes = Encoding.ASCII.GetBytes("SHAKE\n");
+                            stream.Write(shakeBytes, 0, shakeBytes.Length);
+                            stream.Flush();
+                        }
+
+                        // Send PAUSE command to UR3e robot
+                        bool shouldPause = false;
+                        bool sendPauseVal = false;
+                        lock (lockObj)
+                        {
+                            if (pauseRequested)
+                            {
+                                shouldPause = true;
+                                sendPauseVal = pauseTargetState;
+                                pauseRequested = false;
+                            }
+                        }
+                        if (shouldPause)
+                        {
+                            byte[] pauseBytes = Encoding.ASCII.GetBytes(sendPauseVal ? "PAUSE 1\n" : "PAUSE 0\n");
+                            stream.Write(pauseBytes, 0, pauseBytes.Length);
+                            stream.Flush();
+                        }
+
+                        // à¸ªà¹ˆà¸‡ POSE 6-DOF Target Pose à¸ˆà¸²à¸ VR Hand â†’ Python à¹€à¸‰à¸žà¸²à¸°à¹€à¸¡à¸·à¹ˆà¸­à¸¡à¸µ "à¸à¸²à¸£à¹€à¸„à¸¥à¸·à¹ˆà¸­à¸™à¸—à¸µà¹ˆà¸—à¸µà¹ˆà¸¡à¸µà¸™à¸±à¸¢à¸ªà¸³à¸„à¸±à¸" (Significant Change)
+                        float sendPx = 0f, sendPy = 0f, sendPz = 0f;
+                        float sendPrx = 0f, sendPry = 0f, sendPrz = 0f;
+                        bool hasPoseCandidate = false;
+                        lock (lockObj)
+                        {
+                            if (newPoseAvailable)
+                            {
+                                sendPx = targetPx;
+                                sendPy = targetPy;
+                                sendPz = targetPz;
+                                sendPrx = targetPrx;
+                                sendPry = targetPry;
+                                sendPrz = targetPrz;
+                                hasPoseCandidate = true;
+                                newPoseAvailable = false;
+                            }
+                        }
+                        if (hasPoseCandidate)
+                        {
+                            Vector3 curP = new Vector3(sendPx, sendPy, sendPz);
+                            Vector3 curR = new Vector3(sendPrx, sendPry, sendPrz);
+
+                            float dPos = Vector3.Distance(curP, lastSentPosePos);
+                            float dRotDeg = Vector3.Distance(curR, lastSentPoseRot) * Mathf.Rad2Deg;
+                            double elapsedSec = (DateTime.UtcNow - lastPoseSendTime).TotalSeconds;
+
+                            // à¸ªà¹ˆà¸‡à¹€à¸‰à¸žà¸²à¸°à¹€à¸¡à¸·à¹ˆà¸­:
+                            // 1. à¸•à¸³à¹à¸«à¸™à¹ˆà¸‡à¸‚à¸¢à¸±à¸šà¹€à¸à¸´à¸™ posChangeThreshold (à¹€à¸Šà¹ˆà¸™ 1.5 mm)
+                            // 2. à¸«à¸£à¸·à¸­ à¸‚à¹‰à¸­à¸¡à¸·à¸­à¸«à¸¡à¸¸à¸™à¹€à¸à¸´à¸™ rotChangeThreshold (à¹€à¸Šà¹ˆà¸™ 0.8 à¸­à¸‡à¸¨à¸²)
+                            // 3. à¸«à¸£à¸·à¸­ à¸­à¸¢à¸¹à¹ˆà¸™à¸´à¹ˆà¸‡à¸™à¸²à¸™à¹€à¸à¸´à¸™ heartbeatIntervalSec (à¹€à¸Šà¹ˆà¸™ 1.0 à¸§à¸´à¸™à¸²à¸—à¸µ à¸ªà¹ˆà¸‡ Keep-alive 1 à¸„à¸£à¸±à¹‰à¸‡)
+                            bool isSignificant = (dPos >= posChangeThreshold) || (dRotDeg >= rotChangeThreshold);
+                            bool isHeartbeat = (elapsedSec >= heartbeatIntervalSec);
+
+                            if (isSignificant || isHeartbeat)
+                            {
+                                string poseCmd = string.Format(
+                                    System.Globalization.CultureInfo.InvariantCulture,
+                                    "POSE {0:F4} {1:F4} {2:F4} {3:F4} {4:F4} {5:F4}\n",
+                                    sendPx, sendPy, sendPz, sendPrx, sendPry, sendPrz);
+                                byte[] poseBytes = Encoding.ASCII.GetBytes(poseCmd);
+                                stream.Write(poseBytes, 0, poseBytes.Length);
+                                stream.Flush();
+
+                                lastSentPosePos = curP;
+                                lastSentPoseRot = curR;
+                                lastPoseSendTime = DateTime.UtcNow;
+                            }
+                        }
+
+                        // à¸ªà¹ˆà¸‡ MOVE 6-DOF velocity à¸ˆà¸²à¸ VR Hand â†’ Python (à¸„à¸§à¸šà¸„à¸¸à¸¡à¹à¸‚à¸™à¸à¸¥)
+                        float sendVx = 0f, sendVy = 0f, sendVz = 0f;
+                        float sendWx = 0f, sendWy = 0f, sendWz = 0f;
+                        bool shouldSendVel = false;
+                        lock (lockObj)
+                        {
+                            if (newVelAvailable)
+                            {
+                                sendVx = targetVx;
+                                sendVy = targetVy;
+                                sendVz = targetVz;
+                                sendWx = targetWx;
+                                sendWy = targetWy;
+                                sendWz = targetWz;
+                                shouldSendVel = true;
+                                newVelAvailable = false;
+                            }
+                        }
+                        if (shouldSendVel)
+                        {
+                            bool isCurrentZero = (Mathf.Abs(sendVx) < 1e-4f && Mathf.Abs(sendVy) < 1e-4f && Mathf.Abs(sendVz) < 1e-4f &&
+                                                  Mathf.Abs(sendWx) < 1e-4f && Mathf.Abs(sendWy) < 1e-4f && Mathf.Abs(sendWz) < 1e-4f);
+                            // à¸–à¹‰à¸²à¸«à¸¢à¸¸à¸”à¸™à¸´à¹ˆà¸‡à¹à¸¥à¹‰à¸§ (à¹€à¸›à¹‡à¸™ 0 à¸‹à¹‰à¸³) à¹ƒà¸«à¹‰à¸ªà¹ˆà¸‡à¸«à¸¢à¸¸à¸” 1 à¸„à¸£à¸±à¹‰à¸‡à¹à¸¥à¹‰à¸§à¹„à¸¡à¹ˆà¸•à¹‰à¸­à¸‡à¸ªà¹ˆà¸‡à¸‹à¹‰à¸³à¸‹à¹‰à¸­à¸™
+                            if (!isCurrentZero || !lastMoveWasZero)
+                            {
+                                string moveCmd = string.Format(
+                                    System.Globalization.CultureInfo.InvariantCulture,
+                                    "MOVE {0:F4} {1:F4} {2:F4} {3:F4} {4:F4} {5:F4}\n",
+                                    sendVx, sendVy, sendVz, sendWx, sendWy, sendWz);
+                                byte[] moveBytes = Encoding.ASCII.GetBytes(moveCmd);
+                                stream.Write(moveBytes, 0, moveBytes.Length);
+                                stream.Flush();
+                                lastMoveWasZero = isCurrentZero;
+                            }
+                        }
+
+                        // Check incoming data from Python (non-blocking)
+                        if (stream.DataAvailable)
+                        {
+                            int bytesRead = stream.Read(recvBuffer, 0, recvBuffer.Length);
+                            if (bytesRead > 0)
+                            {
+                                string msg = Encoding.UTF8.GetString(recvBuffer, 0, bytesRead).Trim();
+                                lastReceivedMessage = msg;
+
+                                // Parse STATUS <pos> <force>
+                                string[] lines = msg.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                                foreach (var line in lines)
+                                {
+                                    if (line.StartsWith("ALERT"))
+                                    {
+                                        var alertParts = line.Split(new char[] { ' ' }, 3);
+                                        string level = alertParts.Length > 1 ? alertParts[1] : "WARNING";
+                                        string alertMsg = alertParts.Length > 2 ? alertParts[2] : "";
+                                        lock (alertLock)
+                                        {
+                                            pendingAlertsQueue.Enqueue(new SystemAlert(level, alertMsg));
+                                        }
+                                    }
+                                    else if (line.StartsWith("STATUS"))
+                                    {
+                                        var parts = line.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                                        if (parts.Length >= 3)
+                                        {
+                                            int.TryParse(parts[1], out actualGripperPos);
+                                            float.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out actualGripForce);
+                                            if (parts.Length >= 4) int.TryParse(parts[3], out currentSpeedPct);
+                                            if (parts.Length >= 10)
+                                            {
+                                                float.TryParse(parts[4], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out actualRobotPos.x);
+                                                float.TryParse(parts[5], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out actualRobotPos.y);
+                                                float.TryParse(parts[6], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out actualRobotPos.z);
+                                                float.TryParse(parts[7], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out actualRobotRot.x);
+                                                float.TryParse(parts[8], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out actualRobotRot.y);
+                                                float.TryParse(parts[9], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out actualRobotRot.z);
+                                                hasReceivedRobotPose = true;
+                                            // Parse safety proximity ratios (additional floats appended by Python)
+                                            if (parts.Length >= 14)
+                                            {
+                                                float.TryParse(parts[10], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out safetyOuterRatio);
+                                                float.TryParse(parts[11], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out safetyInnerRatio);
+                                                float.TryParse(parts[12], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out safetyCylinderRatio);
+                                                float.TryParse(parts[13], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out safetySpeedRatio);
+                                            }
+                                            if (parts.Length >= 15)
+                                            {
+                                                float.TryParse(parts[14], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out safetyRotLimitRatio);
+                                            }
+                                            if (parts.Length >= 16)
+                                            {
+                                                int.TryParse(parts[15], out safetyRotLimitJointIdx);
+                                            }
+                                            if (parts.Length >= 17)
+                                            {
+                                                float.TryParse(parts[16], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out safetyRotLimitDegLeft);
+                                            }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Thread.Sleep(minIntervalMs);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lastStatus = $"Error: {ex.Message}";
+                }
+                finally
+                {
+                    isConnected = false;
+                    try { stream?.Close(); } catch { }
+                    try { client?.Close(); } catch { }
+                }
+
+                if (isRunning)
+                {
+                    Thread.Sleep(1000); // Wait before reconnecting
+                }
+            }
+        }
+    }
+}
+
