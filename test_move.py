@@ -692,9 +692,8 @@ if __name__ == "__main__":
         print("   [=]              : Gripper หนีบเข้า (กดค้าง / ปล่อยหยุด)")
         print("   [-]              : Gripper คลายออก (กดค้าง / ปล่อยหยุด)")
         print("   [H]              : กลับท่า Safe Home (moveJ)")
-        print("   [N]              : ปรับความเร็ว 50% (ชะลอครึ่งหนึ่ง สำหรับงานละเอียด)")
-        print("   [M]              : ปรับความเร็ว 100% (ความเร็วปกติเต็มพิกัด)")
-        print("   [,]              : ปรับความเร็ว MAX เต็มพิกัด 300% (ขยับตามแขน VR แบบ Real-time ที่สุด ⚡)")
+        print("   [ ] ]            : เพิ่มระดับความเร็ว (25% -> 50% -> 75% -> 100% -> 150% -> 200% -> 300%)")
+        print("   [ [ ]            : ลดระดับความเร็ว")
         print("   [1] / [2] / [3]  : สลับทิศทาง VR เชิงเส้น (1:หน้า-หลัง, 2:ซ้าย-ขวา, 3:ขึ้น-ลง)")
         print("   [4] / [5] / [6]  : สลับทิศทาง VR การหมุน (4:Roll บิดข้อมือ, 5:Pitch ก้ม-เงย, 6:Yaw หันซ้าย-ขวา)")
         print("   [T]              : Tare / เซ็ตศูนย์แรง Fz (วัดแรงบีบ Gripper แม่นยำ)")
@@ -765,9 +764,8 @@ if __name__ == "__main__":
         prev_5_pressed = False
         prev_6_pressed = False
         prev_t_pressed = False
-        prev_n_pressed = False
-        prev_m_pressed = False
-        prev_comma_pressed = False
+        prev_bracket_open_pressed = False
+        prev_bracket_close_pressed = False
         speed_level = 1.0  # 1.0 = 100%, 0.5 = 50%, 3.0 = MAX 300%
         speed_pct = int(round(speed_level * 100))
         smooth_grip_force = 0.0
@@ -935,33 +933,35 @@ if __name__ == "__main__":
                     last_auto_tare_time = now_t
                     perform_tare(f"อ้านิ้วระดับ {current_vr_grip}/255")
 
-            # 4d. ปรับระดับความเร็ว: [N] = 50%, [M] = 100%, [,] = MAX เต็มพิกัด (Edge Trigger)
-            p_n = keyboard.is_pressed('n') or keyboard.is_pressed(49)
-            if p_n and not prev_n_pressed:
-                speed_level = 0.5
-                speed_pct = int(round(speed_level * 100))
-                print(f"\n🐢 [ระดับความเร็ว]: 50% (SMOOTH={SMOOTH_SPEED*speed_level*1000:.0f} mm/s, ROT={math.degrees(ROT_SPEED*speed_level):.1f}°/s - โหมดงานละเอียด)\n")
-            prev_n_pressed = p_n
-
-            p_m = keyboard.is_pressed('m') or keyboard.is_pressed(50)
-            if p_m and not prev_m_pressed:
-                speed_level = 1.0
-                speed_pct = int(round(speed_level * 100))
-                print(f"\n🚀 [ระดับความเร็ว]: 100% (SMOOTH={SMOOTH_SPEED*speed_level*1000:.0f} mm/s, ROT={math.degrees(ROT_SPEED*speed_level):.1f}°/s - ความเร็วปกติเต็มพิกัด)\n")
-            prev_m_pressed = p_m
-
-            # [,] / [<] / Scan code 51: MAX Full Speed (Real-time Arm Tracking)
-            p_comma = False
+            # 4d. ปรับระดับความเร็ว: [ = ลดความเร็ว, ] = เพิ่มความเร็ว (Step-based, ไม่ชนกับปุ่ม M Menu)
+            SPEED_STEPS = [0.25, 0.50, 0.75, 1.00, 1.50, 2.00, 3.00]
+            p_bracket_open = False
+            p_bracket_close = False
             try:
-                p_comma = keyboard.is_pressed(',') or keyboard.is_pressed('<') or keyboard.is_pressed(51)
+                p_bracket_open = keyboard.is_pressed('[') or keyboard.is_pressed('{')
+                p_bracket_close = keyboard.is_pressed(']') or keyboard.is_pressed('}')
             except Exception:
                 pass
-            if p_comma and not prev_comma_pressed:
-                speed_level = 3.0  # MAX Mode (300% speed, 210 mm/s, high acceleration 0.75 m/s²)
+
+            if p_bracket_close and not prev_bracket_close_pressed:
+                # เพิ่มระดับความเร็ว
+                curr_idx = min(range(len(SPEED_STEPS)), key=lambda i: abs(SPEED_STEPS[i] - speed_level))
+                new_idx = min(len(SPEED_STEPS) - 1, curr_idx + 1)
+                speed_level = SPEED_STEPS[new_idx]
                 speed_pct = int(round(speed_level * 100))
-                print(f"\n⚡⚡⚡ [ระดับความเร็ว]: MAX เต็มพิกัด 300% (SMOOTH={SMOOTH_SPEED*speed_level*1000:.0f} mm/s, ACCEL={min(1.0, SMOOTH_ACCEL*speed_level):.2f} m/s², ROT={math.degrees(ROT_SPEED*speed_level):.1f}°/s)")
-                print("   🎮 โหมด Real-time สูงสุด: ขยับตามแขนและมือ VR ฉับไว ไร้ความหน่วง!\n")
-            prev_comma_pressed = p_comma
+                emoji = "⚡⚡⚡" if speed_level >= 2.0 else ("🚀" if speed_level >= 1.0 else "🐢")
+                print(f"\n{emoji} [ระดับความเร็ว]: {speed_pct}% (SMOOTH={SMOOTH_SPEED*speed_level*1000:.0f} mm/s, ROT={math.degrees(ROT_SPEED*speed_level):.1f}°/s)\n")
+            prev_bracket_close_pressed = p_bracket_close
+
+            if p_bracket_open and not prev_bracket_open_pressed:
+                # ลดระดับความเร็ว
+                curr_idx = min(range(len(SPEED_STEPS)), key=lambda i: abs(SPEED_STEPS[i] - speed_level))
+                new_idx = max(0, curr_idx - 1)
+                speed_level = SPEED_STEPS[new_idx]
+                speed_pct = int(round(speed_level * 100))
+                emoji = "⚡⚡⚡" if speed_level >= 2.0 else ("🚀" if speed_level >= 1.0 else "🐢")
+                print(f"\n{emoji} [ระดับความเร็ว]: {speed_pct}% (SMOOTH={SMOOTH_SPEED*speed_level*1000:.0f} mm/s, ROT={math.degrees(ROT_SPEED*speed_level):.1f}°/s)\n")
+            prev_bracket_open_pressed = p_bracket_open
 
             # 5. ควบคุม Gripper (กดค้าง = เคลื่อนที่ต่อเนื่อง, ปล่อย = หยุดทันที)
             # หากอยู่ในสถานะ Pause ให้ระงับการสั่งงาน Gripper ทั้งหมด
@@ -1089,14 +1089,12 @@ if __name__ == "__main__":
                     v_p = [0.0, 0.0, 0.0]
                 else:
                     # S-Curve Soft Landing Approach Speed with Critical Damping
-                    kp_pos = 3.8 * speed_level
+                    kp_pos = min(4.2, 3.2 * math.sqrt(speed_level))
                     vr_speed_cap = max(cur_smooth_speed, VR_TRACKING_MAX_SPEED * min(speed_level, 1.4))
                     v_desired = min(pos_dist * kp_pos, vr_speed_cap)
 
-                    # Critical Velocity Damping (Anti-Inertia & Anti-Centrifugal Control):
-                    # Kp=3.8, Kd=0.85 ทำให้ระบบอยู่ในสภาวะ Critically Damped
-                    # กำจัดแรงเหวี่ยงและแรงเฉื่อยสะสม 100% หุ่นยนต์จะหยุดนิ่งสนิททันทีเมื่อมือหยุด ไร้การสวิงเลยเป้าหมาย
-                    kd_pos = 0.85
+                    # Velocity Damping: ลด kd จาก 0.85 เป็น 0.20 เพื่อป้องกัน phase lag จาก RTDE latency ทำให้หุ่นไม่ส่ายเมื่อขยับเร็ว
+                    kd_pos = 0.20
                     dir_p = [pos_err[i] / pos_dist for i in range(3)]
                     v_p = [dir_p[i] * v_desired - kd_pos * [act_vx, act_vy, act_vz][i] for i in range(3)]
 
@@ -1113,12 +1111,12 @@ if __name__ == "__main__":
                 if is_rot_settled:
                     w_p = [0.0, 0.0, 0.0]
                 else:
-                    # Fast & Snappy Angular Control (เร็ว ฉับพลัน คล่องแคล่ว ไร้ความหน่วงหนืด)
-                    kp_rot = 5.5 * speed_level
+                    # Fast & Snappy Angular Control (จำกัด kp_rot ไม่ให้เกิน 5.0 เพื่อป้องกัน wrist resonance ส่ายที่สปีดสูง)
+                    kp_rot = min(5.0, 3.6 * math.sqrt(speed_level))
                     vr_rot_cap = max(cur_rot_speed * 1.5, VR_TRACKING_MAX_ROT * min(speed_level, 1.8))
                     w_desired = min(rot_dist * kp_rot, vr_rot_cap)
 
-                    kd_rot = 0.15
+                    kd_rot = 0.05
                     dir_r = [rot_err[i] / rot_dist for i in range(3)]
                     w_p = [dir_r[i] * w_desired - kd_rot * [act_wx, act_wy, act_wz][i] for i in range(3)]
 
@@ -1317,7 +1315,7 @@ if __name__ == "__main__":
                 if is_braking_w:
                     a_rot = 35.0  # rad/s² หยุดหมุนฉับไว ไร้หน่วง
                 elif is_pose_mode:
-                    a_rot = 28.0 * speed_level  # หมุนตามมือฉับพลัน คล่องตัวสูง
+                    a_rot = min(20.0, 15.0 * speed_level)  # จำกัดความเร่งเชิงมุมไม่ให้กระชากเกินขีดจำกัดมอเตอร์ข้อมือป้องกันการสั่น
                 else:
                     a_rot = cur_stream_accel * 5.0
 
