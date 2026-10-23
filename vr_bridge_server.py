@@ -22,7 +22,7 @@ class VRBridgeServer:
     - รับคำสั่ง: 'MOVE <vx> <vy> <vz> [wx] [wy] [wz]\n' (ความเร็ว 6-DOF จากมือ VR, หน่วย m/s และ rad/s)
     - ส่งสถานะกลับ: 'STATUS <pos> <force_n>\n'
     """
-    def __init__(self, host=DEFAULT_HOST, port=DEFAULT_PORT, on_grip_callback=None, on_move_callback=None, on_tare_callback=None, on_pose_callback=None, on_home_callback=None, on_shake_callback=None):
+    def __init__(self, host=DEFAULT_HOST, port=DEFAULT_PORT, on_grip_callback=None, on_move_callback=None, on_tare_callback=None, on_pose_callback=None, on_home_callback=None, on_shake_callback=None, on_speed_callback=None):
         self.host = host
         self.port = port
         self.on_grip_callback = on_grip_callback
@@ -31,6 +31,8 @@ class VRBridgeServer:
         self.on_pose_callback = on_pose_callback
         self.on_home_callback = on_home_callback
         self.on_shake_callback = on_shake_callback
+        self.on_speed_callback = on_speed_callback
+        self.speed_pct = 100
         self.server_sock = None
         self.client_sock = None
         self.running = False
@@ -120,6 +122,16 @@ class VRBridgeServer:
         except Exception:
             pass
 
+    def send_shake_status(self, is_shaking: bool):
+        """ ส่งข้อความ SHAKE START / SHAKE DONE ไปยัง Unity """
+        if not self.client_sock:
+            return
+        try:
+            cmd = "SHAKE START\n" if is_shaking else "SHAKE DONE\n"
+            self.client_sock.sendall(cmd.encode("ascii"))
+        except Exception:
+            pass
+
     def _server_loop(self):
         try:
             self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -204,6 +216,20 @@ class VRBridgeServer:
                                         self.on_pause_callback(self.is_teleop_paused)
                                     except Exception as ex:
                                         print(f"⚠️ [VR Bridge] on_pause_callback error: {ex}")
+                            elif line.startswith("SPEED"):
+                                parts = line.split()
+                                if len(parts) >= 2:
+                                    try:
+                                        sp = int(parts[1])
+                                        self.speed_pct = max(0, min(100, sp))
+                                        print(f"⚡ [VR Bridge] Speed set to: {self.speed_pct}%")
+                                        if self.on_speed_callback:
+                                            try:
+                                                self.on_speed_callback(self.speed_pct)
+                                            except Exception as ex:
+                                                print(f"⚠️ [VR Bridge] on_speed_callback error: {ex}")
+                                    except ValueError:
+                                        pass
 
                         # 1. ประมวลผลคำสั่ง 'GRIP' ล่าสุดในรอบนี้ (ตัดคำสั่งเก่าตกค้าง ป้องกัน Delay)
                         if latest_grip_cmd:

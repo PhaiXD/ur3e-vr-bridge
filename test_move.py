@@ -541,47 +541,54 @@ def move_to_safe_home(rtde_c, rtde_r):
 
 def execute_auto_shake(rtde_c, rtde_r, vr_server=None, tare_func=None):
     """
-    เขย่าสารอัตโนมัติ (Automatic Test Tube Shaking):
-    1. เคลื่อนที่ไปที่ท่า Safe Home ก่อนเสมอเพื่อความปลอดภัยและพื้นที่ทำงานโล่ง
-    2. จากมุมองศา home (Wrist 3 = 180°):
-       - คว่ำหลอดทดลอง: หมุน Wrist 3 180° (ไปที่ 0°)
-       - พลิกกลับมา: หมุน Wrist 3 -180° (กลับมาที่ 180°)
-       - ทำแบบนี้ 3 รอบอย่างราบรื่นและนุ่มนวล
+    เขย่าสารอัตโนมัติ (Automatic Test Tube Shaking) ณ ตำแหน่งปัจจุบัน:
+    1. อ่านตำแหน่งข้อต่อปัจจุบัน (ไม่กลับไปที่ Home)
+    2. หมุน Wrist 3 (joint[5]) ±180° จากมุมปัจจุบัน 3 รอบ
     3. เมื่อเสร็จ ทำการ Auto-Tare และแจ้งเตือนสถานะกลับไปยัง Unity HUD
     """
-    print("\n🧪 [Auto Shake] เริ่มกระบวนการเขย่าสารอัตโนมัติ 3 รอบ...")
+    print("\n🧪 [Auto Shake] เริ่มกระบวนการเขย่าสารอัตโนมัติ 3 รอบ (ณ ตำแหน่งปัจจุบัน)...")
     if vr_server:
-        vr_server.send_alert("INFO", "🧪 เริ่มเขย่าสารอัตโนมัติ: กำลังเคลื่อนที่ไปท่า Home...")
+        vr_server.send_shake_status(True)
+        vr_server.send_alert("INFO", "🧪 เริ่มเขย่าสารอัตโนมัติ ณ ตำแหน่งปัจจุบัน...")
 
-    move_to_safe_home(rtde_c, rtde_r)
-    time.sleep(0.3)
+    try:
+        # Read current joint angles — stay at current position, only rotate wrist
+        q_current = list(rtde_r.getActualQ())
+        wrist3_original = q_current[5]
 
-    q_home = list(HOME_Q)
-    q_inverted = list(HOME_Q)
-    q_inverted[5] = math.radians(0)  # หมุน Wrist 3 คว่ำหลอด 180° (จาก 180° -> 0°)
+        # Compute inverted wrist angle (±π from current) ensuring we respect joint limits
+        q_inverted = list(q_current)
+        if wrist3_original - math.pi >= -2 * math.pi + 0.1:
+            q_inverted[5] = wrist3_original - math.pi  # Rotate Wrist 3 by -180°
+        else:
+            q_inverted[5] = wrist3_original + math.pi  # Rotate Wrist 3 by +180°
 
-    SHAKE_SPEED = 2.8   # rad/s (~160°/s) ภายในขีดจำกัด UR3e (<= 3.14 rad/s)
-    SHAKE_ACCEL = 3.5   # rad/s²
+        SHAKE_SPEED = 2.8   # rad/s (~160°/s) ภายในขีดจำกัด UR3e (<= 3.14 rad/s)
+        SHAKE_ACCEL = 3.5   # rad/s²
 
-    for cycle in range(1, 4):
-        print(f"   🔄 [รอบที่ {cycle}/3] กำลังคว่ำหลอดทดลอง (180°)...")
+        for cycle in range(1, 4):
+            print(f"   🔄 [รอบที่ {cycle}/3] กำลังคว่ำหลอดทดลอง (180°)...")
+            if vr_server:
+                vr_server.send_alert("INFO", f"🧪 กำลังเขย่าสาร... รอบที่ {cycle}/3 (คว่ำ 180°)")
+            rtde_c.moveJ(q_inverted, SHAKE_SPEED, SHAKE_ACCEL)
+            time.sleep(0.25)
+
+            print(f"   🔄 [รอบที่ {cycle}/3] กำลังพลิกหลอดกลับ (-180°)...")
+            if vr_server:
+                vr_server.send_alert("INFO", f"🧪 กำลังเขย่าสาร... รอบที่ {cycle}/3 (หงายกลับ -180°)")
+            rtde_c.moveJ(q_current, SHAKE_SPEED, SHAKE_ACCEL)
+            time.sleep(0.25)
+
+        print("✅ [Auto Shake] เขย่าสารอัตโนมัติครบ 3 รอบเรียบร้อยแล้ว!")
         if vr_server:
-            vr_server.send_alert("INFO", f"🧪 กำลังเขย่าสาร... รอบที่ {cycle}/3 (คว่ำ 180°)")
-        rtde_c.moveJ(q_inverted, SHAKE_SPEED, SHAKE_ACCEL)
-        time.sleep(0.25)
+            vr_server.send_alert("SUCCESS", "✅ เขย่าสารอัตโนมัติครบ 3 รอบเรียบร้อยแล้ว!")
 
-        print(f"   🔄 [รอบที่ {cycle}/3] กำลังพลิกหลอดกลับ (-180°)...")
+        if tare_func:
+            tare_func("เสร็จสิ้นการเขย่าสารอัตโนมัติ 3 รอบ")
+    finally:
         if vr_server:
-            vr_server.send_alert("INFO", f"🧪 กำลังเขย่าสาร... รอบที่ {cycle}/3 (หงายกลับ -180°)")
-        rtde_c.moveJ(q_home, SHAKE_SPEED, SHAKE_ACCEL)
-        time.sleep(0.25)
+            vr_server.send_shake_status(False)
 
-    print("✅ [Auto Shake] เขย่าสารอัตโนมัติครบ 3 รอบเรียบร้อยแล้ว!")
-    if vr_server:
-        vr_server.send_alert("SUCCESS", "✅ เขย่าสารอัตโนมัติครบ 3 รอบเรียบร้อยแล้ว!")
-
-    if tare_func:
-        tare_func("เสร็จสิ้นการเขย่าสารอัตโนมัติ 3 รอบ")
     return True
 
 
@@ -653,6 +660,11 @@ if __name__ == "__main__":
             with vr_vel_lock:
                 vr_hand_state["shake_requested"] = True
 
+        def on_vr_speed(pct):
+            nonlocal speed_level
+            speed_level = (pct / 100.0) * 3.0
+            print(f"\n⚡ [VR Speed] ปรับระดับความเร็วจาก VR Menu: {pct}% (speed_level={speed_level:.2f})")
+
         # เริ่มต้น VR Bridge Server (TCP Port 5555 สำหรับเชื่อม Unity Meta Quest Hand Tracking)
         try:
             from vr_bridge_server import VRBridgeServer
@@ -663,7 +675,8 @@ if __name__ == "__main__":
                 on_tare_callback=on_vr_tare,
                 on_pose_callback=on_vr_pose,
                 on_home_callback=on_vr_home,
-                on_shake_callback=on_vr_shake
+                on_shake_callback=on_vr_shake,
+                on_speed_callback=on_vr_speed
             )
             vr_server.start()
         except Exception as e:

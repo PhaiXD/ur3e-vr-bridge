@@ -64,9 +64,17 @@ namespace UR3eVR
         public PinchDetector pinchDetector;
 
         [Header("Gripper Settings")]
-        [Tooltip("Deadband ป้องกันการส่งค่าซ้ำๆ")]
-        [Range(1, 10)]
-        public int deadband = 3;
+        [Tooltip("Deadband ป้องกันการส่งค่าซ้ำๆ (ค่าเริ่มต้น 5)")]
+        [Range(1, 15)]
+        public int deadband = 5;
+
+        [Tooltip("เวลาคงที่ (วินาที) ก่อนเข้าสู่ Precision Mode (ลด deadband เหลือ 2)")]
+        public float precisionHoldThreshold = 1.0f;
+
+        private float gripperHoldTime = 0f;
+        private int lastObservedPos = -1;
+        private float lastGripSendTime = 0f;
+        private const float GRIP_MIN_SEND_INTERVAL = 0.10f; // 10Hz max rate limit
 
         [Header("Live Status (Read Only)")]
         public bool isConnected = false;
@@ -77,11 +85,13 @@ namespace UR3eVR
         public string lastReceivedMessage = "";
         public int currentSpeedPct = 100;
 
-        [Header("Gripper Lock State")]
+        [Header("Gripper Lock & Shake State")]
         [Tooltip("สถานะล็อกระดับการหนีบของ Gripper")]
         public bool isGripperLocked = false;
         public int lockedGripPos = 0;
         private bool wasRightGripPressed = false; // Edge detection for grip button toggle
+        public volatile bool isShaking = false;
+        private volatile int pendingShakeLockAction = 0; // 0=none, 1=lock, 2=unlock
 
         [Header("Robot Pose Feedback (Read Only)")]
         public Vector3 actualRobotPos = Vector3.zero;
@@ -138,6 +148,8 @@ namespace UR3eVR
         private bool shakeRequested = false;
         private bool pauseRequested = false;
         private bool pauseTargetState = false;
+        private bool speedRequested = false;
+        private int pendingSpeedPct = 100;
 
         // Internal
         private Thread networkThread;
@@ -211,25 +223,55 @@ namespace UR3eVR
                 usingController = (activeCtrl == OVRInput.Controller.RTouch || activeCtrl == OVRInput.Controller.Touch);
             }
 
+            if (pendingShakeLockAction == 1)
+            {
+                pendingShakeLockAction = 0;
+                if (!isGripperLocked) ToggleGripperLock();
+            }
+            else if (pendingShakeLockAction == 2)
+            {
+                pendingShakeLockAction = 0;
+                if (isGripperLocked) ToggleGripperLock();
+            }
+
             if (usingController)
             {
                 float triggerVal = OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, OVRInput.Controller.RTouch);
-                int currentPos = Mathf.RoundToInt(triggerVal * 255f);
+                int rawCurrentPos = Mathf.RoundToInt(triggerVal * 255f);
+
+                // Temporal hold filter: If held steady for > precisionHoldThreshold, drop deadband to 2
+                if (Mathf.Abs(rawCurrentPos - lastObservedPos) <= 2)
+                {
+                    gripperHoldTime += Time.deltaTime;
+                }
+                else
+                {
+                    gripperHoldTime = 0f;
+                    lastObservedPos = rawCurrentPos;
+                }
+                int activeDeadband = (gripperHoldTime >= precisionHoldThreshold) ? 2 : deadband;
 
                 if (!isGripperLocked)
                 {
-                    if (Mathf.Abs(currentPos - lastSentPos) >= deadband)
+                    bool isExtreme = (rawCurrentPos == 0 && lastSentPos != 0) || (rawCurrentPos == 255 && lastSentPos != 255);
+                    bool deadbandExceeded = Mathf.Abs(rawCurrentPos - lastSentPos) >= activeDeadband;
+
+                    if (isExtreme || deadbandExceeded)
                     {
-                        SetTargetPos(currentPos);
+                        if (isExtreme || (Time.time - lastGripSendTime >= GRIP_MIN_SEND_INTERVAL))
+                        {
+                            SetTargetPos(rawCurrentPos);
+                            lastGripSendTime = Time.time;
+                        }
                     }
 
                     // Auto-Tare when opening trigger fully (<= autoTareThreshold)
-                    if (currentPos >= 42)
+                    if (rawCurrentPos >= 42)
                     {
                         rearmedForTare = true;
                         isCalibratedAtOpen = false;
                     }
-                    else if (rearmedForTare && currentPos <= autoTareThreshold)
+                    else if (rearmedForTare && rawCurrentPos <= autoTareThreshold)
                     {
                         rearmedForTare = false;
                         isCalibratedAtOpen = true;
@@ -256,20 +298,39 @@ namespace UR3eVR
             }
             else if (pinchDetector != null && pinchDetector.isTracked)
             {
+                int rawCurrentPos = pinchDetector.gripperPos;
+
+                if (Mathf.Abs(rawCurrentPos - lastObservedPos) <= 2)
+                {
+                    gripperHoldTime += Time.deltaTime;
+                }
+                else
+                {
+                    gripperHoldTime = 0f;
+                    lastObservedPos = rawCurrentPos;
+                }
+                int activeDeadband = (gripperHoldTime >= precisionHoldThreshold) ? 2 : deadband;
+
                 if (!isGripperLocked)
                 {
-                    int currentPos = pinchDetector.gripperPos;
-                    if (Mathf.Abs(currentPos - lastSentPos) >= deadband)
+                    bool isExtreme = (rawCurrentPos == 0 && lastSentPos != 0) || (rawCurrentPos == 255 && lastSentPos != 255);
+                    bool deadbandExceeded = Mathf.Abs(rawCurrentPos - lastSentPos) >= activeDeadband;
+
+                    if (isExtreme || deadbandExceeded)
                     {
-                        SetTargetPos(currentPos);
+                        if (isExtreme || (Time.time - lastGripSendTime >= GRIP_MIN_SEND_INTERVAL))
+                        {
+                            SetTargetPos(rawCurrentPos);
+                            lastGripSendTime = Time.time;
+                        }
                     }
 
-                    if (currentPos >= 42)
+                    if (rawCurrentPos >= 42)
                     {
                         rearmedForTare = true;
                         isCalibratedAtOpen = false;
                     }
-                    else if (rearmedForTare && currentPos <= autoTareThreshold)
+                    else if (rearmedForTare && rawCurrentPos <= autoTareThreshold)
                     {
                         rearmedForTare = false;
                         isCalibratedAtOpen = true;
@@ -347,7 +408,23 @@ namespace UR3eVR
             {
                 shakeRequested = true;
             }
-            Debug.Log("[GripperBridge] RequestShake: Sending SHAKE command to UR3e robot...");
+            isShaking = true;
+            if (!isGripperLocked)
+            {
+                ToggleGripperLock();
+            }
+            Debug.Log("[GripperBridge] 🧪 RequestShake: Sending SHAKE command to UR3e robot & auto-locking gripper...");
+        }
+
+        public void SendSpeed(int speedPct)
+        {
+            speedPct = Mathf.Clamp(speedPct, 0, 100);
+            lock (lockObj)
+            {
+                pendingSpeedPct = speedPct;
+                speedRequested = true;
+            }
+            Debug.Log($"[GripperBridge] ⚡ SendSpeed: {speedPct}%");
         }
 
         /// <summary>
@@ -557,6 +634,25 @@ namespace UR3eVR
                             stream.Flush();
                         }
 
+                        // Send SPEED command to UR3e robot (Item 4)
+                        bool shouldSendSpeed = false;
+                        int sendSpeedVal = 100;
+                        lock (lockObj)
+                        {
+                            if (speedRequested)
+                            {
+                                shouldSendSpeed = true;
+                                sendSpeedVal = pendingSpeedPct;
+                                speedRequested = false;
+                            }
+                        }
+                        if (shouldSendSpeed)
+                        {
+                            byte[] speedBytes = Encoding.ASCII.GetBytes($"SPEED {sendSpeedVal}\n");
+                            stream.Write(speedBytes, 0, speedBytes.Length);
+                            stream.Flush();
+                        }
+
                         // à¸ªà¹ˆà¸‡ POSE 6-DOF Target Pose à¸ˆà¸²à¸ VR Hand â†’ Python à¹€à¸‰à¸žà¸²à¸°à¹€à¸¡à¸·à¹ˆà¸­à¸¡à¸µ "à¸à¸²à¸£à¹€à¸„à¸¥à¸·à¹ˆà¸­à¸™à¸—à¸µà¹ˆà¸—à¸µà¹ˆà¸¡à¸µà¸™à¸±à¸¢à¸ªà¸³à¸„à¸±à¸" (Significant Change)
                         float sendPx = 0f, sendPy = 0f, sendPz = 0f;
                         float sendPrx = 0f, sendPry = 0f, sendPrz = 0f;
@@ -665,6 +761,16 @@ namespace UR3eVR
                                         {
                                             pendingAlertsQueue.Enqueue(new SystemAlert(level, alertMsg));
                                         }
+                                    }
+                                    else if (line.StartsWith("SHAKE START"))
+                                    {
+                                        isShaking = true;
+                                        pendingShakeLockAction = 1;
+                                    }
+                                    else if (line.StartsWith("SHAKE DONE"))
+                                    {
+                                        isShaking = false;
+                                        pendingShakeLockAction = 2;
                                     }
                                     else if (line.StartsWith("STATUS"))
                                     {

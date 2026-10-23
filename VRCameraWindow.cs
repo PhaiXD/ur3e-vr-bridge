@@ -572,7 +572,7 @@ namespace UR3eVR
 
             titleText.color = Color.white;
 
-            titleText.text = "Camera Feed [Live]";
+            titleText.text = "Cam Select";
 
 
 
@@ -789,6 +789,28 @@ namespace UR3eVR
             dragger.windowTransform = canvasObj.transform;
 
             dragger.handleImage = grabImg;
+
+            // Bottom-Right Corner Resize Handle (Item 2)
+            GameObject resizeHandleObj = new GameObject("WindowResizeHandle", typeof(RectTransform), typeof(Image), typeof(VRWindowResizer));
+            resizeHandleObj.transform.SetParent(canvasObj.transform, false);
+            RectTransform resRT = resizeHandleObj.GetComponent<RectTransform>();
+            resRT.anchorMin = new Vector2(0.92f, 0.025f);
+            resRT.anchorMax = new Vector2(0.97f, 0.095f);
+            resRT.offsetMin = Vector2.zero;
+            resRT.offsetMax = Vector2.zero;
+
+            Image resImg = resizeHandleObj.GetComponent<Image>();
+            if (roundedRectSprite != null)
+            {
+                resImg.sprite = roundedRectSprite;
+                resImg.type = Image.Type.Sliced;
+            }
+            resImg.material = null;
+            resImg.color = new Color(0.15f, 0.75f, 0.95f, 0.50f);
+
+            var resizer = resizeHandleObj.GetComponent<VRWindowResizer>();
+            resizer.targetCanvasRT = canvasRT;
+            resizer.handleImage = resImg;
 
 
 
