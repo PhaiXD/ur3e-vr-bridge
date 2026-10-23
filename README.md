@@ -1,129 +1,165 @@
 # UR3e VR Bridge 🦾🥽
 
-> **Python Middleware for Real-Time Teleoperation of Universal Robots UR3e via Meta Quest VR**  
-> ระบบมิดเดิลแวร์เชื่อมต่อแว่น Meta Quest VR เข้ากับหุ่นยนต์แขนกล UR3e แบบ Real-Time ด้วยโปรโตคอล RTDE สำหรับงานทดลองทางเคมีและควบคุมทางไกล (Remote Chemistry Teleoperation)
+> **High-Performance Python Middleware for Real-Time Teleoperation of Universal Robots UR3e via Meta Quest VR**  
+> Enables low-latency, immersive bilateral teleoperation for hazardous chemistry experiments and robotic manipulation using optical hand tracking and controller inputs over RTDE.
 
 ---
 
-## 📐 โครงสร้างระบบ (System Architecture)
+## 📐 System Architecture
 
 ```mermaid
 flowchart LR
     subgraph VR ["🥽 Meta Quest (Unity VR)"]
-        H[VR Hand Tracking]
-        C[Left Controller]
-        HUD[Stereo HUD & UI]
+        H["VR Optical Hand Tracking<br/>(6-DOF Wrist & Fingers)"]
+        C["Left Touch Controller<br/>(System Actions & Shortcuts)"]
+        HUD["Bilateral Stereo HUD<br/>(Dual-Eye SPI Telemetry)"]
     end
 
-    subgraph Bridge ["🐍 Python Bridge (50 Hz Loop)"]
-        S[vr_bridge_server.py<br/>TCP Port 5555]
-        UKF[ukf_filter.py<br/>Unscented Kalman Filter]
-        SAFE[robot_safety.py<br/>DLS Kinematics & Limits]
+    subgraph Bridge ["🐍 Python Bridge (50 Hz Real-Time Loop)"]
+        S["vr_bridge_server.py<br/>TCP Server (Port 5555)"]
+        UKF["ukf_filter.py<br/>Unscented Kalman Filter"]
+        SAFE["robot_safety.py<br/>DLS Kinematics & Safety Bounds"]
     end
 
     subgraph Robot ["🤖 Universal Robots UR3e"]
-        RTDE[RTDE Port 30004<br/>speedL / speedJ]
-        GRP[Robotiq Gripper<br/>Port 63352]
+        RTDE["RTDE Interface (Port 30004)<br/>speedL / speedJ Control"]
+        GRP["Robotiq 2F Gripper<br/>TCP Socket (Port 63352)"]
     end
 
-    VR <--> |TCP JSON / Telemetry| S
+    VR <--> |TCP JSON Protocol / Telemetry| S
     S --> UKF
     UKF --> SAFE
-    SAFE --> |RTDE Control| RTDE
-    SAFE --> |Gripper Control| GRP
+    SAFE --> |Real-time RTDE Control| RTDE
+    SAFE --> |Gripper Actuation| GRP
     RTDE -.-> |Actual TCP / Joint States| S
 ```
 
 ---
 
-## 📂 โครงสร้างไดเรกทอรี (Directory Structure)
+## 📂 Project Structure
 
 ```text
 ur3e-vr-bridge/
-├── main.py                   # 🚀 จุดเริ่มต้นหลัก (CLI Entrypoint สำหรับ Teleop หรือ Sim)
-├── test_move.py              # 🦾 สคริปต์ควบคุมหุ่นยนต์ UR3e จริงผ่าน RTDE + VR Bridge
-├── test_vr_simulation.py     # 🧪 สคริปต์ทดสอบจำลอง (Simulation Test 10 ขั้นตอน Offline)
-├── vr_bridge_server.py       # 📡 TCP Server รับส่งพิกัดและคำสั่งระหว่าง Unity กับ Python
-├── robot_safety.py           # 🛡️ จลนศาสตร์ DLS, ขอบเขตความปลอดภัย (Sphere/Cylinder) และ Soft Limits
-├── ukf_filter.py             # 🎯 Unscented Kalman Filter กรองสัญญาณมือสั่นและลด Jitter
-├── requirements.txt          # 📦 รายการไลบรารี Python ที่ต้องติดตั้ง (ur_rtde, keyboard, numpy)
-├── .gitignore                # 🙈 กำหนดไฟล์แคชและไฟล์ชั่วคราวที่ไม่ต้องอัปขึ้น Git
-├── docs/                     # 📚 เอกสารคู่มือและข้อมูลทางเทคนิค
-│   ├── 710-943-00_...pdf     # คู่มือผู้ใช้ทางการ UR3e (User Manual Global EN)
-│   └── ur3e_manual_limits.md # ตารางสรุปขีดจำกัดความเร็ว, ระยะเอื้อม และข้อต่อของ UR3e
-└── tools/                    # 🛠️ เครื่องมือช่วยและสคริปต์บำรุงรักษาระบบ
-    └── apply_all_fixes.py    # สคริปต์แพตช์ Unity C# สำหรับระบบ Stereo SPI และ Hitbox
+├── main.py                   # 🚀 Unified CLI entrypoint (Teleoperation & Simulation)
+├── test_move.py              # 🦾 Real-time UR3e teleoperation engine with RTDE & Gripper control
+├── test_vr_simulation.py     # 🧪 Automated 10-step offline simulation test suite
+├── vr_bridge_server.py       # 📡 High-throughput TCP server handling Unity <-> Python telemetry
+├── robot_safety.py           # 🛡️ DLS Jacobian solver, 3D workspace envelopes & joint soft limits
+├── ukf_filter.py             # 🎯 Unscented Kalman Filter (UKF) for jitter-free hand smoothing
+├── requirements.txt          # 📦 Python package dependencies (ur_rtde, keyboard, numpy)
+├── .gitignore                # 🙈 Git ignore rules (caches, virtual environments, binaries)
+├── README.md                 # 📚 Project documentation
+├── docs/                     # 📖 Hardware specifications and reference manuals
+│   ├── 710-943-00_...pdf     # Official Universal Robots UR3e Global User Manual
+│   └── ur3e_manual_limits.md # Hardware limits, payload capacity, reach & speed limits
+└── tools/                    # 🛠️ Unity editor patches and maintenance utilities
+    └── apply_all_fixes.py    # Unity C# patcher for Single Pass Instanced UI stereo fixes
 ```
 
 ---
 
-## ⚡ การติดตั้งและเตรียมความพร้อม (Installation)
+## ⚡ Prerequisites & Installation
 
-### ข้อกำหนดของระบบ
-- **Python**: แนะนำ **Python 3.12** *(เนื่องจากแพ็กเกจ `ur_rtde` มี Pre-built Wheel รองรับสมบูรณ์)*
-- **หุ่นยนต์**: Universal Robots UR3e (Polyscope 5.x+, เปิดใช้งาน RTDE พอร์ต 30004)
-- **แว่น VR**: Meta Quest 2 / 3 / Pro เชื่อมต่อผ่าน Wi-Fi หรือ Quest Link
+### Requirements
+- **Operating System**: Windows 10/11 or Ubuntu Linux 20.04/22.04
+- **Python**: **Python 3.12** is highly recommended *(guarantees pre-built binary wheel compatibility for `ur_rtde`)*
+- **Robot**: Universal Robots UR3e (e-Series PolyScope 5.x+, RTDE enabled on Port 30004)
+- **VR Headset**: Meta Quest 2 / 3 / Pro running the UR3e VR Unity client via Wi-Fi (LAN) or Meta Quest Link
 
-### คำสั่งติดตั้ง Dependencies
+### Setup Environment
 ```bash
-# ติดตั้งแพ็กเกจทั้งหมดผ่าน requirements.txt
+# Clone the repository
+git clone https://github.com/PhaiXD/ur3e-vr-bridge.git
+cd ur3e-vr-bridge
+
+# Install required dependencies
 python -m pip install -r requirements.txt
 ```
 
-*(หรือติดตั้งแยกด้วยตนเอง: `python -m pip install ur_rtde keyboard numpy`)*
+> **Note for Windows Users**:  
+> If running `pip` directly is restricted by system security policies, invoke it through Python:  
+> `python -m pip install -r requirements.txt` or `py -3.12 -m pip install -r requirements.txt`
 
 ---
 
-## 🎮 วิธีการใช้งาน (How to Run)
+## 🎮 How to Run
 
-### 1. โหมดทดสอบจำลอง (Offline VR Simulation)
-ทดสอบระบบรับส่งข้อมูล, คำสั่งท่าทาง, และระบบความปลอดภัยทั้งหมดโดยไม่ต้องต่อหุ่นยนต์จริง:
+### 1. Offline Simulation Mode (No physical robot required)
+Verify network handshake, gesture detection, kinematics, and safety limits without hardware:
 ```bash
 python main.py --sim
-# หรือรันตรงผ่าน:
+# or run directly:
 python test_vr_simulation.py
 ```
+*Executes all 10 automated unit & integration tests, verifying zero startup drift, deadband zone compliance, and limit deceleration.*
 
-### 2. โหมดควบคุมหุ่นยนต์จริง (Live UR3e Teleoperation)
-ตรวจสอบว่าสาย LAN เชื่อมต่อกับคอนโทรลเลอร์ UR3e (IP เริ่มต้น: `192.168.1.20`):
+### 2. Live UR3e Teleoperation Mode
+Connect your PC to the UR3e controller network (Default robot IP: `192.168.1.20`):
 ```bash
+# Run with default IP (192.168.1.20)
 python main.py
-# หรือระบุ IP หุ่นยนต์:
-python main.py --ip 192.168.1.20
-# หรือรันตรงผ่าน:
+
+# Or specify a custom robot IP:
+python main.py --ip 192.168.1.50
+
+# Or run directly:
 python test_move.py
 ```
 
 ---
 
-## 🕹️ แผนผังการควบคุม (Control & Gestures)
+## 🕹️ Control Scheme & Interaction
 
-### 🥽 Meta Quest VR
-| การกระทำ (Action) | ฟังก์ชันการทำงาน (Function) |
+### 🥽 Meta Quest VR Gestures & Controller Mappings
+| Input / Gesture | Functionality |
 | :--- | :--- |
-| **Right Hand Tracking** | ขยับมือขวา 6-DOF เพื่อบังคับปลายมือหุ่นยนต์ (TCP) ตามมือผู้ใช้ |
-| **Right Hand Pinch** | จีบนิ้วชี้-หัวแม่มือขวา เพื่อสั่งปิด-เปิด Robotiq Gripper ตามระยะนิ้ว |
-| **Left Pinch ค้าง 3 วิ** | หมุนแถบวงกลมครบรอบ 360° สั่งหุ่นยนต์กลับจุด **Safe Home** ทันที |
-| **Left Controller [X]** | บันทึกจุด Origin ใหม่ และสั่งหุ่นยนต์กลับจุด Safe Home |
-| **Left Controller [Y]** | สลับสถานะ **Pause / Resume** หยุดส่งพิกัดชั่วคราวอย่างปลอดภัย |
-| **Left Controller Thumbstick** | กดก้านโยกเพื่อเริ่มโปรแกรม **Auto Shake** เขย่าหลอดทดลองอัตโนมัติ |
+| **Right Hand Motion** | **6-DOF Cartesian Tracking**: End-effector smoothly mirrors user's hand pose in 3D space. |
+| **Right Hand Pinch** | **Proportional Gripper Control**: Continuous pinch distance controls the Robotiq gripper opening/closing. |
+| **Left Hand Pinch (Hold 3s)** | **Return to Safe Home**: Visual progress ring completes a full 360° circle to safely command the arm back to the Home pose. |
+| **Left Controller [X]** | **Recenter & Home**: Re-calibrates coordinate origin and returns robot to Safe Home. |
+| **Left Controller [Y]** | **Pause / Resume**: Instantly pauses teleoperation streaming without terminating connection. |
+| **Left Thumbstick Click** | **Automated Tube Shake**: Triggers automated back-and-forth oscillation sequence for chemical mixing. |
 
-### ⌨️ คีย์บอร์ดคอมพิวเตอร์ (Jogging & Safety Overrides)
-| ปุ่มคีย์บอร์ด | การทำงาน |
+### ⌨️ Host Keyboard Overrides & Safety Controls
+| Key | Function |
 | :--- | :--- |
-| **W / S** | เลื่อนแกน X (หน้า / หลัง) |
-| **A / D** | เลื่อนแกน Y (ซ้าย / ขวา) |
-| **R / F** | เลื่อนแกน Z (ขึ้น / ลง) |
-| **H** | สั่งหุ่นยนต์เคลื่อนกลับ Safe Home |
-| **Spacebar** | สั่งหยุดฉุกเฉิน (Emergency Stop / SpeedStop) ทันที |
-| **1 / 2 / 3** | ปรับระดับเพดานความเร็ว (Slow / Normal / High) |
-| **Esc** | สิ้นสุดโปรแกรมและตัดการเชื่อมต่ออย่างปลอดภัย |
+| **W / S** | Jog TCP forward / backward along the X axis |
+| **A / D** | Jog TCP left / right along the Y axis |
+| **R / F** | Jog TCP up / down along the Z axis |
+| **H** | Move arm to predefined Safe Home position |
+| **Spacebar** | **Emergency Stop (E-Stop)**: Decelerates and halts all joint motions instantly (`speedStop`) |
+| **1 / 2 / 3** | Toggle Cartesian speed ceiling: Slow (30%) / Normal (100%) / Max (300%) |
+| **Esc** | Gracefully disconnects sockets, stops UR scripts, and exits |
 
 ---
 
-## 🛡️ ระบบความปลอดภัย (Safety Architecture)
+## 🛡️ Safety & Kinematic Architecture
 
-1. **Damped Least Squares (DLS) Jacobian**: คำนวณความเร็วข้อต่อแบบชดเชย Singularity ป้องกันแขนกลสะบัดหรือพุ่งเมื่อเข้าใกล้จุดวิกฤต
-2. **3D Safety Envelope**: บังคับให้ปลาย TCP เคลื่อนที่เฉพาะในทรงกลมปลอดภัย (รัศมี 0.22 - 0.50 m) และทรงกระบอกความปลอดภัยรอบเสา Base
-3. **Soft Rotation Limits**: ระบบตรวจสอบขอบเขตข้อต่อ เมื่อหมุนเหลืออีก 20-30° ระบบจะสั่งสั่นเตือนที่ข้อมือ bHaptics และหน่วงความเร็วลงอัตโนมัติ
-4. **Unscented Kalman Filter (UKF)**: กรองสัญญาณรบกวนจากการสะบัดมือและอาการสั่น ให้การเคลื่อนไหวของหุ่นยนต์ราบรื่น นิ่ง และถนอมเกียร์ของแขนกล
+1. **Damped Least Squares (DLS) Jacobian**:
+   - Calculates joint velocities from 6-DOF Cartesian velocities using adaptive damping factor $\lambda$.
+   - Automatically stabilizes motions near kinematic singularities to prevent high-velocity arm flailing.
+
+2. **3D Work Envelope Enclosure**:
+   - **Outer Sphere ($R_{\max} = 0.50\text{ m}$)**: Clamps commands within physical kinematic reach.
+   - **Inner Deadzone ($R_{\min} = 0.22\text{ m}$)**: Prevents collisions with the robot's own base column.
+   - **Z-Plane Ceilings ($Z_{\min} = 0.05\text{ m}, Z_{\max} = 0.70\text{ m}$)**: Protects experiment bench and overhead fixtures.
+
+3. **Soft Joint Rotation Limits & Deceleration**:
+   - Actively monitors all 6 revolute joints in real-time.
+   - When approaching within $20^\circ - 30^\circ$ of a hardware joint limit, rotation speed is scaled down smoothly while full reverse velocity is retained.
+   - Dispatches bilateral haptic alerts to bHaptics wristbands and visual HUD warnings.
+
+4. **Unscented Kalman Filter (UKF)**:
+   - Filters high-frequency hand tremors and tracking occlusions from Meta Quest cameras.
+   - Eliminates jerk and mechanical stress on the UR3e harmonic drives.
+
+---
+
+## 📡 Network & Port Configuration
+
+| Port | Protocol | Component | Description |
+| :---: | :---: | :--- | :--- |
+| **5555** | TCP | `vr_bridge_server.py` | Primary VR telemetry stream between Unity Quest client and Python bridge |
+| **30004** | TCP | Universal Robots RTDE | Real-Time Data Exchange interface (500 Hz control loop) |
+| **63352** | TCP | Robotiq Gripper Server | Direct command interface for 2F-85 / 2F-140 / Hand-E grippers |
+| **5557** | TCP | Simulation Test Suite | Dedicated local loopback port for unit testing |
