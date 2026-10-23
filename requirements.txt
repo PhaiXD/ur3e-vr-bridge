@@ -1,0 +1,9 @@
+# Dependencies for ur3e-vr-bridge
+# Universal Robots Real-Time Data Exchange (provides rtde_control and rtde_receive)
+ur_rtde>=1.6.0
+
+# Keyboard jogging and emergency stop triggers in terminal
+keyboard>=0.13.5
+
+# Numerical calculations and matrix operations (recommended)
+numpy>=1.24.0
