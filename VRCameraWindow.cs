@@ -138,11 +138,12 @@ namespace UR3eVR
 
 
 
-        // Webcam runtime
-
         private WebCamTexture webcamTexture;
 
         public WebCamDevice[] availableDevices { get; private set; }
+
+        private Image bgImg;
+        private Outline bgOutline;
 
 
 
@@ -217,10 +218,6 @@ namespace UR3eVR
 
 
 
-        private void Start()
-
-        {
-
             FindReferences();
 
             BuildCameraWindowUI();
@@ -228,6 +225,8 @@ namespace UR3eVR
             InitializeWebcam();
 
             SetWindowOpen(true);
+
+            SetTheme(PlayerPrefs.GetInt("VR_UI_DARK_MODE", 1) == 1);
 
         }
 
@@ -465,7 +464,7 @@ namespace UR3eVR
 
             // 1. Deep Obsidian Dark-Mode Frosted Glass Window Frame (Dark, Sleek, High-Contrast)
 
-            Image bgImg = canvasObj.AddComponent<Image>();
+            bgImg = canvasObj.AddComponent<Image>();
 
             if (windowGlassSprite != null)
 
@@ -497,7 +496,7 @@ namespace UR3eVR
 
 
 
-            Outline bgOutline = canvasObj.AddComponent<Outline>();
+            bgOutline = canvasObj.AddComponent<Outline>();
 
             bgOutline.effectColor = new Color(0.20f, 0.65f, 1.0f, 0.35f); // Subtle Neon Cyan Rim
 
@@ -1823,6 +1822,18 @@ namespace UR3eVR
 
             SetStereoMode(!isStereo3D);
 
+        }
+
+        public void SetTheme(bool darkMode)
+        {
+            if (bgImg != null)
+            {
+                bgImg.color = darkMode ? new Color(0.06f, 0.08f, 0.14f, 0.96f) : new Color(0.92f, 0.94f, 0.98f, 0.97f);
+            }
+            if (bgOutline != null)
+            {
+                bgOutline.effectColor = darkMode ? new Color(0.20f, 0.65f, 1.0f, 0.35f) : new Color(0.18f, 0.26f, 0.38f, 0.60f);
+            }
         }
 
     }

@@ -140,6 +140,8 @@ namespace UR3eVR
 
             // Start closed by default
             SetMenuOpen(false);
+            isDarkMode = PlayerPrefs.GetInt("VR_UI_DARK_MODE", 1) == 1;
+            ApplyTheme(isDarkMode);
             AddLog("SYSTEM", "VR Menu System Initialized (Stereo Dual-Eye Active).");
         }
 
@@ -1045,6 +1047,9 @@ namespace UR3eVR
             resizer.targetCanvasRT = canvasRT;
             resizer.handleImage = resImg;
 
+            grabBarObj = grabBar;
+            this.resizeHandleObj = resizeHandleObj;
+
             Text resText = CreateText(resizeHandleObj.transform, "⤡", 16, Color.white, TextAnchor.MiddleCenter);
             resText.fontStyle = FontStyle.Bold;
         }
@@ -1760,6 +1765,15 @@ namespace UR3eVR
         // =========================================================================
 
         private bool isDarkMode = true;
+        private GameObject colCtrlObj;
+        private GameObject colAppObj;
+        private GameObject speedCardObj;
+        private GameObject sliderCardObj;
+        private GameObject grabBarObj;
+        private GameObject resizeHandleObj;
+        private GameObject themeToggleBtnObj;
+        private Text themeToggleBtnText;
+        private Image themeToggleBtnImg;
 
         private readonly Dictionary<VRAction, Text> keybindBtnTexts = new Dictionary<VRAction, Text>();
         private readonly Dictionary<VRAction, Image> keybindBtnImages = new Dictionary<VRAction, Image>();
@@ -1786,6 +1800,7 @@ namespace UR3eVR
             // Column 1: Controls Card
             GameObject colCtrl = new GameObject("Card_Controls");
             colCtrl.transform.SetParent(splitObj.transform, false);
+            colCtrlObj = colCtrl;
             Image ccImg = colCtrl.AddComponent<Image>();
             if (roundedRectSprite != null) { ccImg.sprite = roundedRectSprite; ccImg.type = Image.Type.Sliced; }
             ccImg.material = null;
@@ -1825,6 +1840,7 @@ namespace UR3eVR
             // Column 2: Appearance Card
             GameObject colApp = new GameObject("Card_Appearance");
             colApp.transform.SetParent(splitObj.transform, false);
+            colAppObj = colApp;
             Image caImg = colApp.AddComponent<Image>();
             if (roundedRectSprite != null) { caImg.sprite = roundedRectSprite; caImg.type = Image.Type.Sliced; }
             caImg.material = null;
@@ -1843,8 +1859,14 @@ namespace UR3eVR
             CreateSimpleButton(colApp.transform, "🌌 Skybox Background Selector >", 48,
                 new Color(0.18f, 0.16f, 0.32f, 0.95f), Color.white, ActionBackground);
 
-            CreateSimpleButton(colApp.transform, "🌓 Toggle Dark / High-Contrast Mode", 48,
-                new Color(0.14f, 0.22f, 0.28f, 0.95f), Color.white, ToggleDarkLightMode);
+            themeToggleBtnObj = CreateSimpleButton(colApp.transform, isDarkMode ? "🌓 Mode: Dark (Switch to Light)" : "☀️ Mode: Light (Switch to Dark)", 48,
+                isDarkMode ? new Color(0.14f, 0.22f, 0.28f, 0.95f) : new Color(0.96f, 0.96f, 1.0f, 0.98f),
+                isDarkMode ? Color.white : new Color(0.08f, 0.12f, 0.20f), ToggleDarkLightMode);
+            if (themeToggleBtnObj != null)
+            {
+                themeToggleBtnImg = themeToggleBtnObj.GetComponent<Image>();
+                themeToggleBtnText = themeToggleBtnObj.GetComponentInChildren<Text>();
+            }
 
             // Bottom Navigation Bar
             GameObject botBar = new GameObject("SettingsBottomBar");
@@ -1976,10 +1998,10 @@ namespace UR3eVR
                     if (txt != null)
                     {
                         txt.text = VRKeybindManager.GetButtonDisplayName(bound);
-                        txt.color = Color.white;
+                        txt.color = isDarkMode ? Color.white : new Color(0.08f, 0.12f, 0.20f);
                     }
-                    if (img != null) img.color = new Color(0.12f, 0.20f, 0.32f, 0.95f);
-                    if (ol != null) ol.effectColor = new Color(0.0f, 0.80f, 1.0f, 0.40f);
+                    if (img != null) img.color = isDarkMode ? new Color(0.12f, 0.20f, 0.32f, 0.95f) : new Color(0.72f, 0.78f, 0.88f, 0.98f);
+                    if (ol != null) ol.effectColor = isDarkMode ? new Color(0.0f, 0.80f, 1.0f, 0.40f) : new Color(0.15f, 0.45f, 0.75f, 0.50f);
                 }
             }
         }
@@ -1987,8 +2009,173 @@ namespace UR3eVR
         public void ToggleDarkLightMode()
         {
             isDarkMode = !isDarkMode;
-            ShowToast(isDarkMode ? "Dark Theme Active" : "High-Contrast Light Theme Active");
+            PlayerPrefs.SetInt("VR_UI_DARK_MODE", isDarkMode ? 1 : 0);
+            PlayerPrefs.Save();
+            ApplyTheme(isDarkMode);
+            ShowToast(isDarkMode ? "🌙 Dark Theme Active" : "☀️ High-Contrast Light Theme Active");
             HapticPulse(0.3f, 0.08f);
+        }
+
+        public void ApplyTheme(bool dark)
+        {
+            isDarkMode = dark;
+            GameObject[] panels = { panelMain, panelCamera, panelLog, panelBg, panelSettings, panelSpeed };
+            foreach (var p in panels)
+            {
+                if (p == null) continue;
+                var img = p.GetComponent<Image>();
+                if (img != null)
+                {
+                    img.color = dark ? new Color(0.06f, 0.08f, 0.12f, 0.94f) : new Color(0.92f, 0.94f, 0.98f, 0.97f);
+                }
+                var ol = p.GetComponent<Outline>();
+                if (ol != null)
+                {
+                    ol.effectColor = dark ? new Color(1f, 1f, 1f, 0.25f) : new Color(0.18f, 0.26f, 0.38f, 0.60f);
+                }
+
+                Transform hTr = p.transform.Find("Header");
+                if (hTr != null)
+                {
+                    var hImg = hTr.GetComponent<Image>();
+                    if (hImg != null) hImg.color = dark ? new Color(0.10f, 0.14f, 0.22f, 0.94f) : new Color(0.82f, 0.87f, 0.94f, 0.98f);
+                    var hOl = hTr.GetComponent<Outline>();
+                    if (hOl != null) hOl.effectColor = dark ? new Color(0.0f, 0.75f, 1.0f, 0.25f) : new Color(0.10f, 0.40f, 0.75f, 0.45f);
+
+                    Transform tTr = hTr.Find("TitleText");
+                    if (tTr != null)
+                    {
+                        var tTxt = tTr.GetComponent<Text>();
+                        if (tTxt != null) tTxt.color = dark ? new Color(0.92f, 0.96f, 1.0f, 1.0f) : new Color(0.06f, 0.10f, 0.20f, 1.0f);
+                    }
+
+                    Transform bTr = hTr.Find("Btn_Back");
+                    if (bTr != null)
+                    {
+                        var bImg = bTr.GetComponent<Image>();
+                        if (bImg != null) bImg.color = dark ? new Color(0.18f, 0.24f, 0.34f, 0.95f) : new Color(0.70f, 0.76f, 0.86f, 0.98f);
+                        var bTxt = bTr.GetComponentInChildren<Text>();
+                        if (bTxt != null) bTxt.color = dark ? Color.white : new Color(0.08f, 0.12f, 0.22f);
+                    }
+                }
+            }
+
+            if (colCtrlObj != null)
+            {
+                var img = colCtrlObj.GetComponent<Image>();
+                if (img != null) img.color = dark ? new Color(0.06f, 0.10f, 0.16f, 0.95f) : new Color(0.85f, 0.89f, 0.96f, 0.98f);
+                var ol = colCtrlObj.GetComponent<Outline>();
+                if (ol != null) ol.effectColor = dark ? new Color(0.0f, 0.80f, 1.0f, 0.35f) : new Color(0.15f, 0.45f, 0.75f, 0.45f);
+
+                var texts = colCtrlObj.GetComponentsInChildren<Text>(true);
+                foreach (var t in texts)
+                {
+                    if (t.transform.parent != null && t.transform.parent.name.StartsWith("Btn_")) continue;
+                    if (t.transform.parent != null && t.transform.parent.name.StartsWith("Row_"))
+                    {
+                        t.color = dark ? Color.white : new Color(0.08f, 0.12f, 0.22f);
+                        continue;
+                    }
+                    if (t.text.Contains("Touch Controller Keybinds"))
+                        t.color = dark ? new Color(0.0f, 0.90f, 1.0f) : new Color(0.05f, 0.35f, 0.75f);
+                    else
+                        t.color = dark ? new Color(0.75f, 0.85f, 0.95f) : new Color(0.20f, 0.30f, 0.45f);
+                }
+            }
+
+            if (colAppObj != null)
+            {
+                var img = colAppObj.GetComponent<Image>();
+                if (img != null) img.color = dark ? new Color(0.06f, 0.10f, 0.16f, 0.95f) : new Color(0.85f, 0.89f, 0.96f, 0.98f);
+                var ol = colAppObj.GetComponent<Outline>();
+                if (ol != null) ol.effectColor = dark ? new Color(0.7f, 0.3f, 1.0f, 0.35f) : new Color(0.55f, 0.25f, 0.80f, 0.45f);
+
+                var texts = colAppObj.GetComponentsInChildren<Text>(true);
+                foreach (var t in texts)
+                {
+                    if (t.transform.parent != null && t.transform.parent.name.StartsWith("Btn_")) continue;
+                    if (t.text.Contains("Appearance & Environment"))
+                        t.color = dark ? new Color(0.85f, 0.55f, 1.0f) : new Color(0.45f, 0.15f, 0.70f);
+                    else
+                        t.color = dark ? new Color(0.75f, 0.85f, 0.95f) : new Color(0.20f, 0.30f, 0.45f);
+                }
+            }
+
+            if (speedCardObj != null)
+            {
+                var img = speedCardObj.GetComponent<Image>();
+                if (img != null) img.color = dark ? new Color(0.06f, 0.10f, 0.16f, 0.95f) : new Color(0.85f, 0.89f, 0.96f, 0.98f);
+                var ol = speedCardObj.GetComponent<Outline>();
+                if (ol != null) ol.effectColor = dark ? new Color(0.0f, 0.85f, 1.0f, 0.40f) : new Color(0.15f, 0.45f, 0.75f, 0.45f);
+            }
+
+            if (sliderCardObj != null)
+            {
+                Transform sBgTr = sliderCardObj.transform.Find("SliderBackground");
+                if (sBgTr != null)
+                {
+                    var sBgImg = sBgTr.GetComponent<Image>();
+                    if (sBgImg != null) sBgImg.color = dark ? new Color(0.12f, 0.16f, 0.22f, 0.95f) : new Color(0.75f, 0.80f, 0.88f, 0.95f);
+                }
+            }
+
+            if (grabBarObj != null)
+            {
+                var img = grabBarObj.GetComponent<Image>();
+                if (img != null) img.color = dark ? new Color(0.18f, 0.22f, 0.32f, 0.90f) : new Color(0.80f, 0.85f, 0.92f, 0.95f);
+                var ol = grabBarObj.GetComponent<Outline>();
+                if (ol != null) ol.effectColor = dark ? new Color(1f, 1f, 1f, 0.25f) : new Color(0.2f, 0.3f, 0.45f, 0.45f);
+                var lbl = grabBarObj.GetComponentInChildren<Text>();
+                if (lbl != null) lbl.color = dark ? new Color(0.8f, 0.9f, 1.0f, 0.85f) : new Color(0.10f, 0.15f, 0.25f, 0.90f);
+            }
+
+            if (resizeHandleObj != null)
+            {
+                var img = resizeHandleObj.GetComponent<Image>();
+                if (img != null) img.color = dark ? new Color(0.15f, 0.75f, 0.95f, 0.50f) : new Color(0.10f, 0.45f, 0.80f, 0.65f);
+            }
+
+            if (statusText != null)
+            {
+                statusText.color = dark ? new Color(0.85f, 0.85f, 0.85f, 1f) : new Color(0.10f, 0.15f, 0.25f, 1f);
+            }
+
+            if (themeToggleBtnText != null)
+            {
+                themeToggleBtnText.text = dark ? "🌓 Mode: Dark (Switch to Light)" : "☀️ Mode: Light (Switch to Dark)";
+                themeToggleBtnText.color = dark ? Color.white : new Color(0.08f, 0.12f, 0.20f);
+            }
+            if (themeToggleBtnImg != null)
+            {
+                themeToggleBtnImg.color = dark ? new Color(0.14f, 0.22f, 0.28f, 0.95f) : new Color(0.96f, 0.96f, 1.0f, 0.98f);
+            }
+
+            string[] bottomBarNames = { "SettingsBottomBar", "SpeedBottomBar", "BottomBar" };
+            foreach (var p in panels)
+            {
+                if (p == null) continue;
+                foreach (var bName in bottomBarNames)
+                {
+                    Transform bbTr = p.transform.Find(bName);
+                    if (bbTr != null)
+                    {
+                        var btns = bbTr.GetComponentsInChildren<Button>(true);
+                        foreach (var b in btns)
+                        {
+                            var bImg = b.GetComponent<Image>();
+                            if (bImg != null) bImg.color = dark ? new Color(0.18f, 0.22f, 0.30f, 0.95f) : new Color(0.72f, 0.78f, 0.88f, 0.98f);
+                            var bTxt = b.GetComponentInChildren<Text>();
+                            if (bTxt != null) bTxt.color = dark ? Color.white : new Color(0.08f, 0.12f, 0.20f);
+                        }
+                    }
+                }
+            }
+
+            RefreshKeybindUI();
+            UpdateSpeedVisuals(currentSpeedPercent);
+
+            if (VRWristTelemetry.Instance != null) VRWristTelemetry.Instance.SetTheme(dark);
+            if (VRCameraWindow.Instance != null) VRCameraWindow.Instance.SetTheme(dark);
         }
 
         // =========================================================================
@@ -2007,6 +2194,7 @@ namespace UR3eVR
             // Card 1: Current Speed Display Card
             GameObject cardObj = new GameObject("SpeedCard");
             cardObj.transform.SetParent(p, false);
+            speedCardObj = cardObj;
             RectTransform cRT = cardObj.AddComponent<RectTransform>();
             cRT.anchorMin = new Vector2(0.08f, 0.65f);
             cRT.anchorMax = new Vector2(0.92f, 0.83f);
@@ -2032,6 +2220,7 @@ namespace UR3eVR
             // Card 2: Interactive Slider Container
             GameObject sliderCard = new GameObject("SliderContainer");
             sliderCard.transform.SetParent(p, false);
+            sliderCardObj = sliderCard;
             RectTransform sRT = sliderCard.AddComponent<RectTransform>();
             sRT.anchorMin = new Vector2(0.08f, 0.44f);
             sRT.anchorMax = new Vector2(0.92f, 0.60f);

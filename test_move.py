@@ -663,8 +663,9 @@ if __name__ == "__main__":
 
         def on_vr_speed(pct):
             global speed_level
-            speed_level = (pct / 100.0) * 3.0
-            print(f"\n⚡ [VR Speed] ปรับระดับความเร็วจาก VR Menu: {pct}% (speed_level={speed_level:.2f})")
+            pct_clamped = max(0, min(100, int(pct)))
+            speed_level = pct_clamped / 100.0
+            print(f"\n⚡ [VR Speed] ปรับระดับความเร็วจาก VR Menu: {pct_clamped}% (speed_level={speed_level:.2f})")
 
         # เริ่มต้น VR Bridge Server (TCP Port 5555 สำหรับเชื่อม Unity Meta Quest Hand Tracking)
         try:
@@ -706,7 +707,7 @@ if __name__ == "__main__":
         print("   [=]              : Gripper หนีบเข้า (กดค้าง / ปล่อยหยุด)")
         print("   [-]              : Gripper คลายออก (กดค้าง / ปล่อยหยุด)")
         print("   [H]              : กลับท่า Safe Home (moveJ)")
-        print("   [ ] ]            : เพิ่มระดับความเร็ว (25% -> 50% -> 75% -> 100% -> 150% -> 200% -> 300%)")
+        print("   [ ] ]            : เพิ่มระดับความเร็ว (10% -> 25% -> 50% -> 75% -> 100%)")
         print("   [ [ ]            : ลดระดับความเร็ว")
         print("   [1] / [2] / [3]  : สลับทิศทาง VR เชิงเส้น (1:หน้า-หลัง, 2:ซ้าย-ขวา, 3:ขึ้น-ลง)")
         print("   [4] / [5] / [6]  : สลับทิศทาง VR การหมุน (4:Roll บิดข้อมือ, 5:Pitch ก้ม-เงย, 6:Yaw หันซ้าย-ขวา)")
@@ -780,7 +781,7 @@ if __name__ == "__main__":
         prev_t_pressed = False
         prev_bracket_open_pressed = False
         prev_bracket_close_pressed = False
-        speed_level = 1.0  # 1.0 = 100%, 0.5 = 50%, 3.0 = MAX 300%
+        speed_level = 1.0  # 1.0 = 100% MAX, 0.5 = 50%, 0.25 = 25%
         speed_pct = int(round(speed_level * 100))
         smooth_grip_force = 0.0
         current_stream_qd = [0.0] * 6  # ตัวแปรจำความเร็วข้อต่อสำหรับการทำ Velocity Ramp นุ่มนวล ไร้ Jerk
@@ -948,7 +949,7 @@ if __name__ == "__main__":
                     perform_tare(f"อ้านิ้วระดับ {current_vr_grip}/255")
 
             # 4d. ปรับระดับความเร็ว: [ = ลดความเร็ว, ] = เพิ่มความเร็ว (Step-based, ไม่ชนกับปุ่ม M Menu)
-            SPEED_STEPS = [0.25, 0.50, 0.75, 1.00, 1.50, 2.00, 3.00]
+            SPEED_STEPS = [0.10, 0.25, 0.50, 0.75, 1.00]
             p_bracket_open = False
             p_bracket_close = False
             try:
@@ -963,7 +964,7 @@ if __name__ == "__main__":
                 new_idx = min(len(SPEED_STEPS) - 1, curr_idx + 1)
                 speed_level = SPEED_STEPS[new_idx]
                 speed_pct = int(round(speed_level * 100))
-                emoji = "⚡⚡⚡" if speed_level >= 2.0 else ("🚀" if speed_level >= 1.0 else "🐢")
+                emoji = "🚀" if speed_level >= 1.0 else ("⚡" if speed_level >= 0.5 else "🐢")
                 print(f"\n{emoji} [ระดับความเร็ว]: {speed_pct}% (SMOOTH={SMOOTH_SPEED*speed_level*1000:.0f} mm/s, ROT={math.degrees(ROT_SPEED*speed_level):.1f}°/s)\n")
             prev_bracket_close_pressed = p_bracket_close
 
@@ -973,7 +974,7 @@ if __name__ == "__main__":
                 new_idx = max(0, curr_idx - 1)
                 speed_level = SPEED_STEPS[new_idx]
                 speed_pct = int(round(speed_level * 100))
-                emoji = "⚡⚡⚡" if speed_level >= 2.0 else ("🚀" if speed_level >= 1.0 else "🐢")
+                emoji = "🚀" if speed_level >= 1.0 else ("⚡" if speed_level >= 0.5 else "🐢")
                 print(f"\n{emoji} [ระดับความเร็ว]: {speed_pct}% (SMOOTH={SMOOTH_SPEED*speed_level*1000:.0f} mm/s, ROT={math.degrees(ROT_SPEED*speed_level):.1f}°/s)\n")
             prev_bracket_open_pressed = p_bracket_open
 
@@ -1432,7 +1433,7 @@ if __name__ == "__main__":
                 z_pendant = z_mm - 400.0
 
                 # พิมพ์ค่าแรง Fz (Raw vs UKF Filtered) พร้อมพิกัดปัจจุบัน และระดับความเร็ว
-                speed_label = "MAX ⚡ (300%)" if speed_level >= 2.0 else f"{speed_pct}%"
+                speed_label = f"{speed_pct}% [MAX 🚀]" if speed_level >= 1.0 else f"{speed_pct}%"
                 rot_hud = f" | Rot=[Wx:{math.degrees(wx):+.0f}, Wy:{math.degrees(wy):+.0f}, Wz:{math.degrees(wz):+.0f}]°/s" if (wx != 0 or wy != 0 or wz != 0) else ""
                 print(f"⚡ [force] Fz_raw={fz:+.2f} N (UKF Grip={smooth_grip_force:5.1f} N) | Base(mm)=[X:{x_mm:.0f}, Y:{y_mm:.0f}, Z:{z_mm:.0f}]{rot_hud} | Pendant Z={z_pendant:.0f}mm | Speed={speed_label}")
                 last_force_print = current_time

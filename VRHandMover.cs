@@ -58,6 +58,7 @@ namespace UR3eVR
         [Tooltip("สถานะกำลังเขย่าสารอัตโนมัติ (กดก้านโยก Thumbstick ซ้าย)")]
         public bool isShakingActive = false;
         private bool wasShaking = false;
+        private float shakeStartTime = 0f;
 
         [Header("Target Pose and Anchor Settings")]
         [Range(0.2f, 3.0f)] public float posSensitivity = 0.50f;
@@ -382,16 +383,28 @@ namespace UR3eVR
             }
 
             // ตรวจสอบสถานะเขย่าสาร (Auto Shake): หากกำลังเขย่า ให้หยุดส่งพิกัดมือ และเมื่อเขย่าเสร็จให้ SyncAnchor ใหม่
-            bool isShakingNow = (gripperBridge != null && gripperBridge.isShaking) || isShakingActive;
+            bool isShakingNow = (gripperBridge != null && gripperBridge.isShaking);
+
+            // Safety timeout: หากเขย่าสารนานเกิน 15 วินาที (เช่น เซิร์ฟเวอร์หลุดหรือขัดข้อง) ให้ปลดล็อกและคืนการควบคุม
+            if (wasShaking && (Time.time - shakeStartTime > 15f))
+            {
+                if (gripperBridge != null) gripperBridge.isShaking = false;
+                isShakingNow = false;
+                Debug.LogWarning("[VRHandMover] ⚠️ Auto Shake timeout safety triggered (> 15s) - Resuming teleoperation!");
+            }
+
             if (isShakingNow && !wasShaking)
             {
                 wasShaking = true;
+                isShakingActive = true;
+                shakeStartTime = Time.time;
             }
             else if (!isShakingNow && wasShaking)
             {
                 wasShaking = false;
                 isShakingActive = false;
                 SyncAnchorOnResume();
+                Debug.Log("[VRHandMover] 🧪 Auto Shake complete! Teleoperation smoothly resumed.");
             }
 
             // หากอยู่ในสถานะ Pause หรือกำลังเขย่าสาร: หยุดส่งพิกัดไปยังแขนกลทันที
@@ -830,11 +843,13 @@ namespace UR3eVR
         /// </summary>
         public void ExecuteAutoShake()
         {
-            isShakingActive = true;
             if (gripperBridge != null)
             {
                 gripperBridge.RequestShake();
             }
+            wasShaking = true;
+            isShakingActive = true;
+            shakeStartTime = Time.time;
             TriggerLeftControllerHaptic(0.7f, 0.25f);
             Debug.Log("[VRHandMover] [Thumbstick Click] 🧪 Automated Test Tube Shake (3 cycles) requested!");
         }

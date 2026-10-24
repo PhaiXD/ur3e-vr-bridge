@@ -59,6 +59,8 @@ namespace UR3eVR
         private Text gripperText;
         private Text forceAndStateText;
         private Image speedBarFill;
+        private Image bgImg;
+        private Outline bgOl;
         private Font hudFont;
         private Sprite roundedRectSprite;
 
@@ -81,6 +83,7 @@ namespace UR3eVR
         private void Start()
         {
             FindReferences();
+            SetTheme(PlayerPrefs.GetInt("VR_UI_DARK_MODE", 1) == 1);
         }
 
         private void LoadResources()
@@ -150,7 +153,7 @@ namespace UR3eVR
             bgRT.offsetMin = Vector2.zero;
             bgRT.offsetMax = Vector2.zero;
 
-            Image bgImg = bgObj.AddComponent<Image>();
+            bgImg = bgObj.AddComponent<Image>();
             if (roundedRectSprite != null)
             {
                 bgImg.sprite = roundedRectSprite;
@@ -159,7 +162,7 @@ namespace UR3eVR
             bgImg.material = null;
             bgImg.color = new Color(0.04f, 0.07f, 0.12f, 0.95f);
 
-            Outline bgOl = bgObj.AddComponent<Outline>();
+            bgOl = bgObj.AddComponent<Outline>();
             bgOl.effectColor = new Color(0.0f, 0.85f, 1.0f, 0.45f);
             bgOl.effectDistance = new Vector2(1f, -1f);
 
@@ -330,14 +333,14 @@ namespace UR3eVR
                 posAndErrorText.text = $"📍 [{homeBadge}] {actMm.x:F0},{actMm.y:F0},{actMm.z:F0}mm (Δ{posErrMm:F0}mm)";
             }
 
-            int spdPct = (gripperBridge != null) ? gripperBridge.currentSpeedPct : 100;
+            int spdPct = (gripperBridge != null) ? Mathf.Clamp(gripperBridge.currentSpeedPct, 0, 100) : 100;
             if (speedText != null)
             {
                 speedText.text = $"⚡ SPD: {spdPct}%";
             }
             if (speedBarFill != null)
             {
-                speedBarFill.rectTransform.anchorMax = new Vector2(Mathf.Clamp01(spdPct / 100f), 1f);
+                speedBarFill.rectTransform.anchorMax = new Vector2(spdPct / 100f, 1f);
                 if (spdPct < 50) speedBarFill.color = new Color(0.0f, 1.0f, 0.55f);
                 else if (spdPct < 75) speedBarFill.color = new Color(1.0f, 0.80f, 0.0f);
                 else speedBarFill.color = new Color(1.0f, 0.25f, 0.25f);
@@ -365,6 +368,24 @@ namespace UR3eVR
 
                 forceAndStateText.text = $"⚖️ Fz: {force:+0.00;-0.00;+0.00} N | {stateMsg}";
             }
+        }
+
+        public void SetTheme(bool darkMode)
+        {
+            if (bgImg != null)
+            {
+                bgImg.color = darkMode ? new Color(0.04f, 0.07f, 0.12f, 0.95f) : new Color(0.92f, 0.94f, 0.98f, 0.96f);
+            }
+            if (bgOl != null)
+            {
+                bgOl.effectColor = darkMode ? new Color(0.0f, 0.85f, 1.0f, 0.45f) : new Color(0.18f, 0.26f, 0.38f, 0.60f);
+            }
+            Color textCol = darkMode ? Color.white : new Color(0.08f, 0.12f, 0.22f);
+            if (robotStatusText != null) robotStatusText.color = textCol;
+            if (speedText != null) speedText.color = textCol;
+            if (gripperText != null) gripperText.color = textCol;
+            if (forceAndStateText != null) forceAndStateText.color = textCol;
+            if (posAndErrorText != null) posAndErrorText.color = darkMode ? new Color(0.75f, 0.85f, 0.95f) : new Color(0.15f, 0.25f, 0.35f);
         }
 
         private Text CreateText(Transform parent, string text, int fontSize, Color color, TextAnchor alignment)
