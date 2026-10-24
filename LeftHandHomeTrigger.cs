@@ -60,17 +60,11 @@ namespace UR3eVR
         public bool isSuccessState = false;
         public string lastTriggeredAction = "";
 
-        // Visual Hierarchy
         private GameObject menuRoot;
         private GameObject homeButtonObj;
         private LineRenderer homeBgCircle;
         private LineRenderer homeFillCircle;
         private TextMesh homeTextMesh;
-
-        private GameObject lockButtonObj;
-        private LineRenderer lockBgCircle;
-        private LineRenderer lockFillCircle;
-        private TextMesh lockTextMesh;
 
         private Transform leftThumbTip;
         private Transform leftIndexTip;
@@ -282,18 +276,6 @@ namespace UR3eVR
                     return;
                 }
             }
-
-            // ตรวจสอบระยะห่างกับปุ่ม Gripper Lock
-            if (lockButtonObj != null)
-            {
-                float dLock = Vector3.Distance(touchPos, lockButtonObj.transform.position);
-                if (dLock <= touchThreshold)
-                {
-                    ToggleGripperLock();
-                    touchCooldown = 0.5f;
-                    return;
-                }
-            }
         }
 
         private void CheckOneHandedDwell()
@@ -307,44 +289,17 @@ namespace UR3eVR
                 return;
             }
 
-            // คำนวณทิศทางการเอียงของมือซ้าย
-            ActionOption selectedTilt = ActionOption.None;
-            if (leftOVRHand != null)
-            {
-                // ตรวจสอบการเอียงแกน Right ของมือซ้ายเทียบกับระนาบสายตา
-                Vector3 handRight = leftOVRHand.transform.right;
-                if (headTransform != null)
-                {
-                    handRight = headTransform.InverseTransformDirection(handRight);
-                }
+            // Left pinch is strictly dedicated to Set Home & Recenter
+            currentHoveredOption = ActionOption.Home;
 
-                if (handRight.y > 0.15f || handRight.x < -0.15f)
-                {
-                    selectedTilt = ActionOption.Home; // เอียงไปทางซ้าย -> Home
-                }
-                else if (handRight.y < -0.15f || handRight.x > 0.15f)
-                {
-                    selectedTilt = ActionOption.GripperLock; // เอียงไปทางขวา -> Lock
-                }
-            }
-
-            currentHoveredOption = selectedTilt;
-
-            if (currentHoveredOption != ActionOption.None && isArmed)
+            if (isArmed)
             {
                 dwellTimer += Time.deltaTime;
                 dwellProgress = Mathf.Clamp01(dwellTimer / holdDuration);
 
                 if (dwellTimer >= holdDuration)
                 {
-                    if (currentHoveredOption == ActionOption.Home)
-                    {
-                        TriggerHomeAndRecenter();
-                    }
-                    else if (currentHoveredOption == ActionOption.GripperLock)
-                    {
-                        ToggleGripperLock();
-                    }
+                    TriggerHomeAndRecenter();
                     dwellTimer = 0f;
                     dwellProgress = 1f;
                     isArmed = false; // ป้องกันการเรียกซ้ำจนกว่าจะปล่อยมือ
@@ -362,10 +317,6 @@ namespace UR3eVR
             bool kH = false; try { kH = Input.GetKeyDown(KeyCode.H); } catch {} if (kH)
             {
                 TriggerHomeAndRecenter();
-            }
-            bool kLG = false; try { kLG = Input.GetKeyDown(KeyCode.L) || Input.GetKeyDown(KeyCode.G); } catch {} if (kLG)
-            {
-                ToggleGripperLock();
             }
         }
 
@@ -419,10 +370,10 @@ namespace UR3eVR
             if (unlitShader == null) unlitShader = Shader.Find("UR3eVR/URPHandOutline");
             if (unlitShader == null) unlitShader = Shader.Find("Sprites/Default");
 
-            // ==================== 1. ปุ่ม Home (ซ้าย) ====================
+            // ==================== ปุ่ม Home (กึ่งกลาง) ====================
             homeButtonObj = new GameObject("Btn_Home");
             homeButtonObj.transform.SetParent(menuRoot.transform);
-            homeButtonObj.transform.localPosition = new Vector3(-BUTTON_SPACING, 0f, 0f);
+            homeButtonObj.transform.localPosition = Vector3.zero;
 
             // เส้นขอบวงกลม Background
             GameObject homeBgObj = new GameObject("BG_Circle");
@@ -443,31 +394,6 @@ namespace UR3eVR
             homeTextObj.transform.localScale = Vector3.one * 0.0012f;
             homeTextMesh = homeTextObj.AddComponent<TextMesh>();
             SetupTextMesh(homeTextMesh, "SET HOME\n(UR3e + Center)");
-
-            // ==================== 2. ปุ่ม Gripper Lock (ขวา) ====================
-            lockButtonObj = new GameObject("Btn_Lock");
-            lockButtonObj.transform.SetParent(menuRoot.transform);
-            lockButtonObj.transform.localPosition = new Vector3(BUTTON_SPACING, 0f, 0f);
-
-            // เส้นขอบวงกลม Background
-            GameObject lockBgObj = new GameObject("BG_Circle");
-            lockBgObj.transform.SetParent(lockButtonObj.transform);
-            lockBgCircle = lockBgObj.AddComponent<LineRenderer>();
-            SetupCircleLine(lockBgCircle, unlitShader, buttonRadius, 0.003f, new Color(0.1f, 0.5f, 0.7f, 0.4f));
-
-            // เส้น Progress Fill
-            GameObject lockFillObj = new GameObject("Fill_Circle");
-            lockFillObj.transform.SetParent(lockButtonObj.transform);
-            lockFillCircle = lockFillObj.AddComponent<LineRenderer>();
-            SetupFillLine(lockFillCircle, unlitShader, buttonRadius, 0.0045f);
-
-            // ข้อความ 3D Text
-            GameObject lockTextObj = new GameObject("Text_Lock");
-            lockTextObj.transform.SetParent(lockButtonObj.transform);
-            lockTextObj.transform.localPosition = new Vector3(0f, 0f, -0.002f);
-            lockTextObj.transform.localScale = Vector3.one * 0.0012f;
-            lockTextMesh = lockTextObj.AddComponent<TextMesh>();
-            SetupTextMesh(lockTextMesh, "GRIPPER\nFREE\n(Tap to Lock)");
 
             menuRoot.SetActive(false);
         }
@@ -561,10 +487,7 @@ namespace UR3eVR
             if (menuRoot == null) return;
             if (!menuRoot.activeSelf) menuRoot.SetActive(true);
 
-            bool isLocked = (gripperBridge != null && gripperBridge.isGripperLocked);
-            int gripPct = (gripperBridge != null) ? Mathf.RoundToInt((gripperBridge.lockedGripPos / 255f) * 100f) : 0;
-
-            // ==================== 1. อัปเดตปุ่ม Home ====================
+            // ==================== อัปเดตปุ่ม Home ====================
             if (isSuccessState && lastTriggeredAction == "HOME")
             {
                 homeTextMesh.text = "HOMED!\n(Center Reset)";
@@ -582,58 +505,6 @@ namespace UR3eVR
                 homeBgCircle.startColor = new Color(homeColor.r, homeColor.g, homeColor.b, 0.5f);
                 homeBgCircle.endColor = new Color(homeColor.r, homeColor.g, homeColor.b, 0.5f);
                 UpdateArcFill(homeFillCircle, isHomeHovered ? dwellProgress : 0f, homeColor);
-            }
-
-            // ==================== 2. อัปเดตปุ่ม Gripper Lock ====================
-            if (isSuccessState && (lastTriggeredAction == "LOCKED" || lastTriggeredAction == "UNLOCKED"))
-            {
-                if (lastTriggeredAction == "LOCKED")
-                {
-                    lockTextMesh.text = string.Format("LOCKED!\n({0}%)", gripPct);
-                    lockTextMesh.color = new Color(1f, 0.8f, 0.1f);
-                    lockBgCircle.startColor = new Color(1f, 0.8f, 0.1f);
-                    lockBgCircle.endColor = new Color(1f, 0.8f, 0.1f);
-                    UpdateArcFill(lockFillCircle, 1f, new Color(1f, 0.8f, 0.1f));
-                }
-                else
-                {
-                    lockTextMesh.text = "UNLOCKED!\n(Live Tracking)";
-                    lockTextMesh.color = Color.cyan;
-                    lockBgCircle.startColor = Color.cyan;
-                    lockBgCircle.endColor = Color.cyan;
-                    UpdateArcFill(lockFillCircle, 1f, Color.cyan);
-                }
-            }
-            else
-            {
-                bool isLockHovered = (currentHoveredOption == ActionOption.GripperLock);
-                Color lockColor;
-
-                if (isLocked)
-                {
-                    // สถานะล็อกอยู่: สีส้มทองสว่าง พร้อมบอกให้กดอีกครั้งเพื่อปลดล็อก
-                    lockColor = isLockHovered ? Color.yellow : new Color(1f, 0.75f, 0.1f);
-                    float pulse = 0.85f + 0.15f * Mathf.Sin(Time.time * 6f);
-                    lockTextMesh.text = isLockHovered 
-                        ? string.Format("UNLOCK?\n[{0}%]", Mathf.RoundToInt(dwellProgress * 100f))
-                        : string.Format("LOCKED ({0}%)\n(Tap to Unlock)", gripPct);
-                    lockTextMesh.color = lockColor * pulse;
-                    lockBgCircle.startColor = lockColor;
-                    lockBgCircle.endColor = lockColor;
-                }
-                else
-                {
-                    // สถานะปกติ (ยังไม่ล็อก)
-                    lockColor = isLockHovered ? Color.yellow : new Color(0.2f, 0.8f, 1f);
-                    lockTextMesh.text = isLockHovered 
-                        ? string.Format("LOCK GRIP\n[{0}%]", Mathf.RoundToInt(dwellProgress * 100f))
-                        : "GRIPPER\nFREE\n(Tap to Lock)";
-                    lockTextMesh.color = lockColor;
-                    lockBgCircle.startColor = new Color(lockColor.r, lockColor.g, lockColor.b, 0.5f);
-                    lockBgCircle.endColor = new Color(lockColor.r, lockColor.g, lockColor.b, 0.5f);
-                }
-
-                UpdateArcFill(lockFillCircle, isLockHovered ? dwellProgress : 0f, lockColor);
             }
         }
 

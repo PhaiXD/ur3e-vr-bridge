@@ -157,6 +157,7 @@ namespace UR3eVR
 
 
         public bool hasPositionedDefault = false;
+        public int assignedSlotIndex = 0;
 
         private List<Button> interactiveButtons = new List<Button>();
 
@@ -1393,89 +1394,107 @@ namespace UR3eVR
         /// </summary>
 
         public static VRCameraWindow SpawnAdditionalWindow(int targetIndex = -1)
-
         {
-
-            GameObject newObj = new GameObject("VRCameraWindow_" + (ActiveWindows.Count + 1));
-
-            var newWin = newObj.AddComponent<VRCameraWindow>();
-
-            newWin.isSecondaryWindow = true;
-
-
-
-            if (Instance != null)
-
+            // If the primary Instance exists but is closed, re-open it at center instead of creating an orphan secondary window
+            if (Instance != null && !Instance.isOpen)
             {
-
-                newWin.visionWindowMaterial = Instance.visionWindowMaterial;
-
-                newWin.visionElementMaterial = Instance.visionElementMaterial;
-
-                newWin.windowGlassSprite = Instance.windowGlassSprite;
-
-                newWin.roundedRectSprite = Instance.roundedRectSprite;
-
-                newWin.roundedRectHighlightSprite = Instance.roundedRectHighlightSprite;
-
-                newWin.crossIconSprite = Instance.crossIconSprite;
-
-                newWin.visionFont = Instance.visionFont;
-
-
-
-                // Position cleanly offset to the right — count only current secondary windows to avoid accumulation
-                // when windows are created/destroyed repeatedly
-
-                if (Instance.canvasObj != null)
-
-                {
-
-                    Transform baseTr = Instance.canvasObj.transform;
-
-                    // Count only existing secondary windows (excludes the primary Instance)
-                    int existingSecondary = 0;
-                    foreach (var w in ActiveWindows)
-                    {
-                        if (w != null && w.isSecondaryWindow) existingSecondary++;
-                    }
-
-                    float offsetDist = 0.72f * Mathf.Max(1, existingSecondary);
-
-                    newObj.transform.position = baseTr.position + baseTr.right * offsetDist;
-
-                    newObj.transform.rotation = baseTr.rotation;
-
-                    newWin.hasPositionedDefault = true;
-
-                }
-
-
-
-                if (targetIndex >= 0)
-
-                {
-
-                    newWin.currentCameraIndex = targetIndex;
-
-                }
-
-                else if (Instance.availableDevices != null && Instance.availableDevices.Length > 0)
-
-                {
-
-                    newWin.currentCameraIndex = (Instance.currentCameraIndex + ActiveWindows.Count) % Instance.availableDevices.Length;
-
-                }
-
+                Instance.SetWindowOpen(true);
+                Instance.RepositionWindowDefault();
+                if (targetIndex >= 0) Instance.OpenWebcamIndex(targetIndex);
+                return Instance;
             }
 
+            GameObject newObj = new GameObject("VRCameraWindow_" + (ActiveWindows.Count + 1));
+            var newWin = newObj.AddComponent<VRCameraWindow>();
+            newWin.isSecondaryWindow = true;
 
+            if (Instance != null)
+            {
+                newWin.visionWindowMaterial = Instance.visionWindowMaterial;
+                newWin.visionElementMaterial = Instance.visionElementMaterial;
+                newWin.windowGlassSprite = Instance.windowGlassSprite;
+                newWin.roundedRectSprite = Instance.roundedRectSprite;
+                newWin.roundedRectHighlightSprite = Instance.roundedRectHighlightSprite;
+                newWin.crossIconSprite = Instance.crossIconSprite;
+                newWin.visionFont = Instance.visionFont;
 
-            Debug.Log($"[VRCameraWindow] Spawned additional Camera Window #{ActiveWindows.Count}");
+                if (targetIndex >= 0)
+                {
+                    newWin.currentCameraIndex = targetIndex;
+                }
+                else if (Instance.availableDevices != null && Instance.availableDevices.Length > 0)
+                {
+                    newWin.currentCameraIndex = (Instance.currentCameraIndex + ActiveWindows.Count) % Instance.availableDevices.Length;
+                }
+            }
+
+            // =========================================================================
+            // Curved Cylindrical Arc Slot Placement (Constant Radius, Zero Accumulation)
+            // =========================================================================
+            // 1. Identify which slots are currently occupied by open, active windows
+            HashSet<int> occupiedSlots = new HashSet<int>();
+            foreach (var w in ActiveWindows)
+            {
+                if (w != null && w != newWin && w.isOpen && w.gameObject != null)
+                {
+                    occupiedSlots.Add(w.assignedSlotIndex);
+                }
+            }
+
+            // 2. Assign the lowest available slot (starting from slot 1 for secondary windows)
+            int slot = 1;
+            while (occupiedSlots.Contains(slot))
+            {
+                slot++;
+            }
+            newWin.assignedSlotIndex = slot;
+
+            // 3. Calculate slot angle on the cylinder arc:
+            // Slot 1: +39° (Right 1), Slot 2: -39° (Left 1), Slot 3: +78° (Right 2), Slot 4: -78° (Left 2)...
+            int pairIndex = (slot + 1) / 2;
+            float sign = (slot % 2 != 0) ? 1.0f : -1.0f;
+            float slotAngle = sign * (pairIndex * 39.0f);
+
+            // 4. Determine head position and forward reference
+            Camera cam = (Instance != null && Instance.centerEyeCamera != null)
+                ? Instance.centerEyeCamera
+                : (Camera.main ?? FindAnyObjectByType<Camera>());
+
+            Vector3 headPos = (cam != null) ? cam.transform.position : Vector3.zero;
+            Vector3 baseFwd = Vector3.forward;
+
+            if (Instance != null && Instance.canvasObj != null)
+            {
+                Vector3 toPrimary = Instance.canvasObj.transform.position - headPos;
+                toPrimary.y = 0;
+                if (toPrimary.sqrMagnitude > 0.04f) baseFwd = toPrimary.normalized;
+                else if (cam != null) baseFwd = Vector3.ProjectOnPlane(cam.transform.forward, Vector3.up).normalized;
+            }
+            else if (cam != null)
+            {
+                baseFwd = Vector3.ProjectOnPlane(cam.transform.forward, Vector3.up).normalized;
+            }
+
+            if (baseFwd.sqrMagnitude < 0.01f) baseFwd = Vector3.forward;
+
+            // 5. Position on cylindrical arc around user at the exact same defaultDistance (never accumulates!)
+            float windowDist = (Instance != null && Instance.defaultDistance > 0.5f) ? Instance.defaultDistance : 1.05f;
+            Quaternion slotRot = Quaternion.AngleAxis(slotAngle, Vector3.up);
+            Vector3 slotDir = slotRot * baseFwd;
+            float yOffset = (Instance != null && Instance.canvasObj != null)
+                ? Instance.canvasObj.transform.position.y
+                : (headPos.y + 0.12f);
+
+            Vector3 spawnPos = headPos + slotDir * windowDist;
+            spawnPos.y = yOffset;
+
+            newObj.transform.position = spawnPos;
+            newObj.transform.rotation = Quaternion.LookRotation(slotDir, Vector3.up);
+            newWin.hasPositionedDefault = true;
+
+            Debug.Log($"[VRCameraWindow] Spawned Camera Window #{ActiveWindows.Count} in Arc Slot {slot} (Angle: {slotAngle:F0}°, Distance: {windowDist:F2}m)");
 
             return newWin;
-
         }
 
 

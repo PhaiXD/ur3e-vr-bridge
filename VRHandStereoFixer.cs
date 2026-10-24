@@ -1,4 +1,5 @@
 using System;
+using System.Reflection;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -6,109 +7,248 @@ namespace UR3eVR
 {
     /// <summary>
     /// VRHandStereoFixer: Comprehensive Fix for Meta Quest Hand & Controller Tracking in Unity VR
+    /// - True Independent Per-Hand Tracking: Each hand independently displays either as a Controller
+    ///   (if physically held in hand) OR as a Bare Hand (if holding nothing), without cross-interference!
     /// - Guarantees hand mesh visibility in standalone builds (.exe & Link)
-    /// - Prevents phantom controller models: Only shows controller 3D mesh when actually in hand (ControllerInHand)
+    /// - Prevents phantom controller models: Only shows controller 3D mesh when actually held
     /// - Fixes Single Pass Instanced stereo rendering: ensures World Space Canvases and Text render in BOTH eyes
-    /// - Configures Left Hand Remote Laser Pointer and finger grip pose handlers
+    /// - Configures Left Hand Remote Laser Pointer and UI interaction
     /// </summary>
     public class VRHandStereoFixer : MonoBehaviour
     {
         [Tooltip("Custom URP Hand Material (optional, will auto-create or use URP fallback if null)")]
         public Material urpHandMaterial;
 
+        // Static per-hand independent in-hand states accessible across all scripts
+        public static bool IsLeftControllerInHand { get; private set; } = false;
+        public static bool IsRightControllerInHand { get; private set; } = false;
+
+        private static float lastLeftActiveTime = -10f;
+        private static float lastRightActiveTime = -10f;
+        private const float IN_HAND_TIMEOUT = 0.6f;
+
         private Camera centerEyeCamera;
         private Material stereoTextMaterial;
-        private Material stereoUIMaterial;
+
+        // Tracking references cached for speed
+        private GameObject leftHandObj;
+        private GameObject rightHandObj;
+        private SkinnedMeshRenderer leftHandSMR;
+        private SkinnedMeshRenderer rightHandSMR;
+        private OVRHand leftOVRHand;
+        private OVRHand rightOVRHand;
+        private GameObject leftControllerPrefab;
+        private GameObject rightControllerPrefab;
 
         private void Awake()
         {
             EnsureMaterial();
-            EnableControllerDrivenHandPoses();
+            ConfigureOVRManagerSettings();
         }
 
         private void Start()
         {
             EnsureMaterial();
-            EnableControllerDrivenHandPoses();
+            ConfigureOVRManagerSettings();
+            CacheTrackingReferences();
+            UpdateHandAndControllerStates();
             FixOVRMeshRenderers();
             ApplyStereoFix();
             FixStereoWorldCanvasesAndText();
             EnsureGripPoseAndLaserPointer();
-
-            // Maintain left hand mesh visibility based on controller connection
-            bool isLeftCtrlActive = (OVRInput.GetConnectedControllers() & OVRInput.Controller.LTouch) != 0;
-            var leftHandObj = GameObject.Find("[BuildingBlock] Hand Tracking left");
-            if (leftHandObj != null)
-            {
-                var smr = leftHandObj.GetComponent<SkinnedMeshRenderer>();
-                if (smr != null && smr.enabled == isLeftCtrlActive)
-                {
-                    smr.enabled = !isLeftCtrlActive;
-                }
-            }
         }
 
         private void Update()
         {
-            EnableControllerDrivenHandPoses();
+            ConfigureOVRManagerSettings();
+            UpdateHandAndControllerStates();
             FixOVRMeshRenderers();
             ApplyStereoFix();
             FixStereoWorldCanvasesAndText();
             EnsureGripPoseAndLaserPointer();
-
-            // Maintain left hand mesh visibility based on controller connection
-            bool isLeftCtrlActive = (OVRInput.GetConnectedControllers() & OVRInput.Controller.LTouch) != 0;
-            var leftHandObj = GameObject.Find("[BuildingBlock] Hand Tracking left");
-            if (leftHandObj != null)
-            {
-                var smr = leftHandObj.GetComponent<SkinnedMeshRenderer>();
-                if (smr != null && smr.enabled == isLeftCtrlActive)
-                {
-                    smr.enabled = !isLeftCtrlActive;
-                }
-            }
         }
 
         private void LateUpdate()
         {
+            UpdateHandAndControllerStates();
             ApplyStereoFix();
             FixStereoWorldCanvasesAndText();
             EnsureGripPoseAndLaserPointer();
+        }
 
-            // Maintain left hand mesh visibility based on controller connection
-            bool isLeftCtrlActive = (OVRInput.GetConnectedControllers() & OVRInput.Controller.LTouch) != 0;
-            var leftHandObj = GameObject.Find("[BuildingBlock] Hand Tracking left");
+        /// <summary>
+        /// Multi-sensor independent detection for whether a controller is physically held in the user's hand.
+        /// Combines Meta Quest in-hand state, capacitive touch, buttons, and physical IMU movement.
+        /// </summary>
+        public static bool CheckControllerInHand(OVRInput.Controller controller, OVRHand ovrHand = null)
+        {
+            if (!OVRInput.IsControllerConnected(controller)) return false;
+
+            bool isLeft = (controller == OVRInput.Controller.LTouch);
+            OVRInput.Hand handSide = isLeft ? OVRInput.Hand.HandLeft : OVRInput.Hand.HandRight;
+
+            // 1. Direct System Recognition (Quest Multimodal)
+            try
+            {
+                var inHandState = OVRInput.GetControllerIsInHandState(handSide);
+                if (inHandState == OVRInput.ControllerInHandState.ControllerInHand)
+                {
+                    if (isLeft) lastLeftActiveTime = Time.time;
+                    else lastRightActiveTime = Time.time;
+                    return true;
+                }
+                else if (inHandState == OVRInput.ControllerInHandState.ControllerNotInHand)
+                {
+                    return false;
+                }
+            }
+            catch { }
+
+            // 2. Capacitive Touch Sensors & Physical Button / Trigger Inputs
+            bool hasTouch = false;
+            if (isLeft)
+            {
+                hasTouch = OVRInput.Get(OVRInput.Touch.PrimaryIndexTrigger, controller)
+                        || OVRInput.Get(OVRInput.Touch.PrimaryThumbstick, controller)
+                        || OVRInput.Get(OVRInput.Touch.Three, controller) // X
+                        || OVRInput.Get(OVRInput.Touch.Four, controller)  // Y
+                        || OVRInput.Get(OVRInput.Touch.PrimaryThumbRest, controller)
+                        || OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, controller) > 0.05f
+                        || OVRInput.Get(OVRInput.Axis1D.PrimaryHandTrigger, controller) > 0.05f
+                        || OVRInput.Get(OVRInput.Button.Any, controller);
+            }
+            else
+            {
+                hasTouch = OVRInput.Get(OVRInput.Touch.PrimaryIndexTrigger, controller)
+                        || OVRInput.Get(OVRInput.Touch.PrimaryThumbstick, controller)
+                        || OVRInput.Get(OVRInput.Touch.One, controller) // A
+                        || OVRInput.Get(OVRInput.Touch.Two, controller) // B
+                        || OVRInput.Get(OVRInput.Touch.PrimaryThumbRest, controller)
+                        || OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, controller) > 0.05f
+                        || OVRInput.Get(OVRInput.Axis1D.PrimaryHandTrigger, controller) > 0.05f
+                        || OVRInput.Get(OVRInput.Button.Any, controller);
+            }
+
+            // 3. Controller Physical Motion
+            // A controller resting on a table has zero velocity and angular velocity.
+            // A controller held in a human hand always exhibits micro-movements (hand tremor > 0.003).
+            Vector3 vel = OVRInput.GetLocalControllerVelocity(controller);
+            Vector3 angVel = OVRInput.GetLocalControllerAngularVelocity(controller);
+            bool isMoving = (vel.sqrMagnitude > 0.005f) || (angVel.sqrMagnitude > 0.02f);
+
+            bool isHandTracked = (ovrHand != null && ovrHand.IsTracked);
+
+            if (hasTouch || (isMoving && !isHandTracked))
+            {
+                if (isLeft) lastLeftActiveTime = Time.time;
+                else lastRightActiveTime = Time.time;
+                return true;
+            }
+
+            // 4. Grace Period (Timeout)
+            float lastTime = isLeft ? lastLeftActiveTime : lastRightActiveTime;
+            if (Time.time - lastTime < IN_HAND_TIMEOUT)
+            {
+                if (isHandTracked && (Time.time - lastTime > 0.25f))
+                {
+                    return false;
+                }
+                return true;
+            }
+
+            return false;
+        }
+
+        private void CacheTrackingReferences()
+        {
+            if (leftHandObj == null) leftHandObj = GameObject.Find("[BuildingBlock] Hand Tracking left");
+            if (rightHandObj == null) rightHandObj = GameObject.Find("[BuildingBlock] Hand Tracking right");
+
             if (leftHandObj != null)
             {
-                var smr = leftHandObj.GetComponent<SkinnedMeshRenderer>();
-                if (smr != null && smr.enabled == isLeftCtrlActive)
+                if (leftHandSMR == null) leftHandSMR = leftHandObj.GetComponent<SkinnedMeshRenderer>();
+                if (leftOVRHand == null) leftOVRHand = leftHandObj.GetComponent<OVRHand>();
+            }
+
+            if (rightHandObj != null)
+            {
+                if (rightHandSMR == null) rightHandSMR = rightHandObj.GetComponent<SkinnedMeshRenderer>();
+                if (rightOVRHand == null) rightOVRHand = rightHandObj.GetComponent<OVRHand>();
+            }
+
+            if (leftControllerPrefab == null) leftControllerPrefab = GameObject.Find("OVRControllerPrefab_Left");
+            if (rightControllerPrefab == null) rightControllerPrefab = GameObject.Find("OVRControllerPrefab_Right");
+        }
+
+        private void UpdateHandAndControllerStates()
+        {
+            if (leftHandObj == null || rightHandObj == null || leftControllerPrefab == null || rightControllerPrefab == null)
+            {
+                CacheTrackingReferences();
+            }
+
+            // 1. Evaluate independent states
+            IsLeftControllerInHand = CheckControllerInHand(OVRInput.Controller.LTouch, leftOVRHand);
+            IsRightControllerInHand = CheckControllerInHand(OVRInput.Controller.RTouch, rightOVRHand);
+
+            // 2. Control Left Controller 3D Model
+            if (leftControllerPrefab != null && leftControllerPrefab.activeSelf != IsLeftControllerInHand)
+            {
+                leftControllerPrefab.SetActive(IsLeftControllerInHand);
+            }
+
+            // 3. Control Right Controller 3D Model
+            if (rightControllerPrefab != null && rightControllerPrefab.activeSelf != IsRightControllerInHand)
+            {
+                rightControllerPrefab.SetActive(IsRightControllerInHand);
+            }
+
+            // 4. Control Left Hand Mesh visibility
+            if (leftHandSMR != null)
+            {
+                bool shouldShowLeftHand = !IsLeftControllerInHand;
+                if (leftHandSMR.enabled != shouldShowLeftHand)
                 {
-                    smr.enabled = !isLeftCtrlActive;
+                    leftHandSMR.enabled = shouldShowLeftHand;
+                }
+            }
+
+            // 5. Control Right Hand Mesh visibility
+            if (rightHandSMR != null)
+            {
+                bool shouldShowRightHand = !IsRightControllerInHand;
+                if (rightHandSMR.enabled != shouldShowRightHand)
+                {
+                    rightHandSMR.enabled = shouldShowRightHand;
                 }
             }
         }
 
-        private void EnableControllerDrivenHandPoses()
+        private void ConfigureOVRManagerSettings()
         {
             var mgr = OVRManager.instance ?? FindAnyObjectByType<OVRManager>();
-            if (mgr != null && mgr.controllerDrivenHandPosesType != OVRManager.ControllerDrivenHandPosesType.ConformingToController)
+            if (mgr != null)
             {
-                mgr.controllerDrivenHandPosesType = OVRManager.ControllerDrivenHandPosesType.ConformingToController;
+                // CRITICAL FIX: Disable global ControllerDrivenHandPoses so that bare hands
+                // remain genuine optical tracking with natural fingers, rather than being forced
+                // into conforming controller grip poses whenever ANY controller is picked up!
+                if (mgr.controllerDrivenHandPosesType != OVRManager.ControllerDrivenHandPosesType.None)
+                {
+                    mgr.controllerDrivenHandPosesType = OVRManager.ControllerDrivenHandPosesType.None;
+                }
+                if (!mgr.SimultaneousHandsAndControllersEnabled)
+                {
+                    mgr.SimultaneousHandsAndControllersEnabled = true;
+                }
             }
 
-            // CRITICAL FIX FOR PHANTOM CONTROLLERS:
-            // Use ControllerInHand so that the 3D controller model ONLY appears
-            // on the hand that is actually holding a physical remote!
+            // Ensure OVRControllerHelper displays models whenever their prefab is active
             var helpers = FindObjectsByType<OVRControllerHelper>(FindObjectsSortMode.None);
             foreach (var h in helpers)
             {
-                if (h.m_showState != OVRInput.InputDeviceShowState.ControllerInHand)
+                if (h.m_showState != OVRInput.InputDeviceShowState.Always)
                 {
-                    h.m_showState = OVRInput.InputDeviceShowState.ControllerInHand;
-                }
-                if (!h.showWhenHandsArePoweredByNaturalControllerPoses)
-                {
-                    h.showWhenHandsArePoweredByNaturalControllerPoses = true;
+                    h.m_showState = OVRInput.InputDeviceShowState.Always;
                 }
             }
         }
@@ -178,36 +318,32 @@ namespace UR3eVR
                 bool isRight = omr.gameObject.name.ToLower().Contains("right") ||
                     (skel != null && (skel.GetSkeletonType() == OVRSkeleton.SkeletonType.XRHandRight || skel.GetSkeletonType() == OVRSkeleton.SkeletonType.HandRight));
 
-                // If LEFT hand and controller is connected: Hide left hand mesh so only the controller model shows cleanly!
-                if (!isRight)
+                bool shouldShow = isRight ? !IsRightControllerInHand : !IsLeftControllerInHand;
+                var smr = omr.GetComponent<SkinnedMeshRenderer>();
+                if (smr != null && smr.enabled != shouldShow)
                 {
-                    bool isLeftCtrl = (OVRInput.GetConnectedControllers() & OVRInput.Controller.LTouch) != 0;
-                    var smr = omr.GetComponent<SkinnedMeshRenderer>();
-                    if (smr != null)
-                    {
-                        smr.enabled = !isLeftCtrl;
-                    }
-                    continue; // Do NOT force confidence behavior on left hand!
+                    smr.enabled = shouldShow;
                 }
 
-                // RIGHT HAND ONLY (robot teleoperation bare hand):
+                if (!shouldShow) continue;
+
                 try
                 {
-                    var confField = typeof(OVRMeshRenderer).GetField("_confidenceBehavior", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    var confField = typeof(OVRMeshRenderer).GetField("_confidenceBehavior", BindingFlags.NonPublic | BindingFlags.Instance);
                     if (confField != null) confField.SetValue(omr, OVRMeshRenderer.ConfidenceBehavior.None);
                 }
                 catch { }
 
                 try
                 {
-                    var gestField = typeof(OVRMeshRenderer).GetField("_systemGestureBehavior", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    var gestField = typeof(OVRMeshRenderer).GetField("_systemGestureBehavior", BindingFlags.NonPublic | BindingFlags.Instance);
                     if (gestField != null) gestField.SetValue(omr, OVRMeshRenderer.SystemGestureBehavior.None);
                 }
                 catch { }
 
                 try
                 {
-                    var origMatField = typeof(OVRMeshRenderer).GetField("_originalMaterial", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    var origMatField = typeof(OVRMeshRenderer).GetField("_originalMaterial", BindingFlags.NonPublic | BindingFlags.Instance);
                     if (origMatField != null && urpHandMaterial != null) origMatField.SetValue(omr, urpHandMaterial);
                 }
                 catch { }
@@ -244,10 +380,14 @@ namespace UR3eVR
                         smr.updateWhenOffscreen = true;
                     }
 
-                    // 2. Keep hand mesh enabled so hand is visible in builds
-                    if (smr.sharedMesh != null && !smr.enabled)
+                    // 2. Only show hand mesh if controller is NOT in hand on this side
+                    bool isRight = goName.Contains("right") ||
+                        (smr.GetComponent<OVRSkeleton>() != null && (smr.GetComponent<OVRSkeleton>().GetSkeletonType() == OVRSkeleton.SkeletonType.XRHandRight || smr.GetComponent<OVRSkeleton>().GetSkeletonType() == OVRSkeleton.SkeletonType.HandRight));
+                    bool shouldShow = isRight ? !IsRightControllerInHand : !IsLeftControllerInHand;
+
+                    if (smr.sharedMesh != null && smr.enabled != shouldShow)
                     {
-                        smr.enabled = true;
+                        smr.enabled = shouldShow;
                     }
 
                     // 3. Fix materials for VR Single Pass Instanced
@@ -383,32 +523,6 @@ namespace UR3eVR
 
         public void EnsureGripPoseAndLaserPointer()
         {
-            // Ensure VRControllerGripPoseHandler ONLY on LEFT hand (Right hand is bare hand for robot control)
-            var hands = FindObjectsByType<OVRHand>(FindObjectsSortMode.None);
-            foreach (var h in hands)
-            {
-                if (h == null) continue;
-                var skel = h.GetComponent<OVRSkeleton>();
-                bool isRight = (h.GetHand() == OVRPlugin.Hand.HandRight)
-                    || (skel != null && (skel.GetSkeletonType() == OVRSkeleton.SkeletonType.XRHandRight || skel.GetSkeletonType() == OVRSkeleton.SkeletonType.HandRight))
-                    || h.gameObject.name.ToLower().Contains("right");
-                if (isRight)
-                {
-                    var existingGrip = h.GetComponent<VRControllerGripPoseHandler>();
-                    if (existingGrip != null) Destroy(existingGrip);
-                    continue;
-                }
-
-                if (h.GetComponent<VRControllerGripPoseHandler>() == null)
-                {
-                    var grip = h.gameObject.AddComponent<VRControllerGripPoseHandler>();
-                    grip.ovrHand = h;
-                    grip.ovrSkeleton = h.GetComponent<OVRSkeleton>();
-                    grip.controller = OVRInput.Controller.LTouch;
-                    grip.isRightHand = false;
-                }
-            }
-
             // Ensure VRRemoteLaserPointer exists and operates smoothly
             var laser = VRRemoteLaserPointer.Instance ?? FindAnyObjectByType<VRRemoteLaserPointer>();
             if (laser == null)

@@ -618,6 +618,7 @@ if __name__ == "__main__":
             "x": False, "y": False, "z": False,
             "roll": False, "pitch": False, "yaw": False
         }
+        speed_level = 1.0
 
         def on_vr_pose(px, py, pz, prx, pry, prz):
             """รับค่า Target Pose (x, y, z, rx, ry, rz) จาก Unity VR Hand Tracking"""
@@ -661,7 +662,7 @@ if __name__ == "__main__":
                 vr_hand_state["shake_requested"] = True
 
         def on_vr_speed(pct):
-            nonlocal speed_level
+            global speed_level
             speed_level = (pct / 100.0) * 3.0
             print(f"\n⚡ [VR Speed] ปรับระดับความเร็วจาก VR Menu: {pct}% (speed_level={speed_level:.2f})")
 

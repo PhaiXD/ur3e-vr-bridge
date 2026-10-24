@@ -47,6 +47,10 @@ namespace UR3eVR
         private Sprite windowGlassSprite;
         private Sprite roundedRectSprite;
 
+        [Header("HUD Display Settings")]
+        [Tooltip("When false (default), the floating 'UR3e Teleoperation Telemetry' window is disabled. Live telemetry is viewed directly on the left wrist via VRWristTelemetry.")]
+        public bool showFloatingHUD = false;
+
         private void Awake()
         {
             if (Instance != null && Instance != this)
@@ -56,13 +60,36 @@ namespace UR3eVR
             }
             Instance = this;
 
-            LoadVisionProAssets();
+            // Remove any legacy floating canvas if it already exists
+            var existingCanvas = GameObject.Find("StereoHandDebugHUD_Canvas");
+            if (existingCanvas != null && !showFloatingHUD)
+            {
+                Destroy(existingCanvas);
+            }
+
+            if (showFloatingHUD)
+            {
+                LoadVisionProAssets();
+            }
         }
 
         private void Start()
         {
             FindReferences();
-            BuildStereoHUDCanvas();
+
+            if (showFloatingHUD)
+            {
+                BuildStereoHUDCanvas();
+            }
+            else
+            {
+                // Ensure live telemetry is active on wrist
+                if (FindAnyObjectByType<VRWristTelemetry>() == null)
+                {
+                    GameObject wristObj = new GameObject("VR_WristTelemetry");
+                    wristObj.AddComponent<VRWristTelemetry>();
+                }
+            }
         }
 
         private void LoadVisionProAssets()
@@ -276,6 +303,8 @@ namespace UR3eVR
 
         private void LateUpdate()
         {
+            if (!showFloatingHUD || hudCanvasObj == null) return;
+
             if (centerEyeAnchor == null) FindReferences();
 
             // Refresh World Camera for Stereo Rendering in Both Eyes
@@ -348,6 +377,38 @@ namespace UR3eVR
                 $"<color=#00F0FF>Target XYZ:</color>  X:{tgtMm.x,5:F0}  Y:{tgtMm.y,5:F0}  Z:{tgtMm.z,5:F0} mm\n" +
                 $"<color=#00FF88>Actual XYZ:</color>  X:{actMm.x,5:F0}  Y:{actMm.y,5:F0}  Z:{actMm.z,5:F0} mm  (Err: {posErrMm:F1} mm)\n\n" +
                 $"{pinchDesc}";
+        }
+
+        public void SetFloatingHUDVisible(bool visible)
+        {
+            showFloatingHUD = visible;
+            if (showFloatingHUD)
+            {
+                if (hudCanvasObj == null)
+                {
+                    LoadVisionProAssets();
+                    BuildStereoHUDCanvas();
+                }
+                else
+                {
+                    hudCanvasObj.SetActive(true);
+                }
+            }
+            else
+            {
+                if (hudCanvasObj != null)
+                {
+                    hudCanvasObj.SetActive(false);
+                }
+            }
+        }
+
+        private void OnDestroy()
+        {
+            if (hudCanvasObj != null)
+            {
+                Destroy(hudCanvasObj);
+            }
         }
     }
 }

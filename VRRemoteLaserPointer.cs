@@ -46,6 +46,7 @@ namespace UR3eVR
         private VRWindowResizer currentHoverResizer = null;
         private VRWindowDragger activeDraggingWindow = null;
         private VRWindowResizer activeResizingWindow = null;
+        private Slider activeDraggingSlider = null;
         private float activeDragDistance = 1.0f;
         private Vector3 activeDragLocalOffset = Vector3.zero;
 
@@ -181,7 +182,13 @@ namespace UR3eVR
             Vector3 rayOrigin;
             Vector3 rayDir;
 
-            bool isControllerTracked = OVRInput.GetControllerPositionTracked(controller);
+            bool isControllerTracked = VRHandStereoFixer.IsLeftControllerInHand && OVRInput.GetControllerPositionTracked(controller);
+            if (!isControllerTracked)
+            {
+                if (lineRenderer != null && lineRenderer.enabled) lineRenderer.enabled = false;
+                if (reticleObj != null && reticleObj.activeSelf) reticleObj.SetActive(false);
+                return;
+            }
             if (isControllerTracked && trackingSpace != null)
             {
                 Vector3 localPos = OVRInput.GetLocalControllerPosition(controller);
@@ -210,11 +217,9 @@ namespace UR3eVR
                 return;
             }
 
-            // Safe Trigger Input check (Both Index Trigger and Grip button on Left Remote)
+            // Safe Trigger Input check (Index Trigger on Left Remote)
             bool isTriggerDown = OVRInput.Get(OVRInput.Button.PrimaryIndexTrigger, controller)
-                              || OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, controller) > 0.45f
-                              || OVRInput.Get(OVRInput.Button.PrimaryHandTrigger, controller)
-                              || OVRInput.Get(OVRInput.Axis1D.PrimaryHandTrigger, controller) > 0.45f;
+                              || OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, controller) > 0.45f;
 
             try
             {
@@ -229,9 +234,7 @@ namespace UR3eVR
             if (activeDraggingWindow != null)
             {
                 bool isStillHeld = OVRInput.Get(OVRInput.Button.PrimaryIndexTrigger, controller)
-                                || OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, controller) > 0.35f
-                                || OVRInput.Get(OVRInput.Button.PrimaryHandTrigger, controller)
-                                || OVRInput.Get(OVRInput.Axis1D.PrimaryHandTrigger, controller) > 0.35f;
+                                || OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, controller) > 0.35f;
                 try { isStillHeld |= Input.GetMouseButton(0); } catch { }
 
                 if (isStillHeld && activeDraggingWindow.windowTransform != null)
@@ -283,9 +286,7 @@ namespace UR3eVR
             if (activeResizingWindow != null)
             {
                 bool isStillHeld = OVRInput.Get(OVRInput.Button.PrimaryIndexTrigger, controller)
-                                || OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, controller) > 0.35f
-                                || OVRInput.Get(OVRInput.Button.PrimaryHandTrigger, controller)
-                                || OVRInput.Get(OVRInput.Axis1D.PrimaryHandTrigger, controller) > 0.35f;
+                                || OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, controller) > 0.35f;
                 try { isStillHeld |= Input.GetMouseButton(0); } catch { }
 
                 if (isStillHeld)
@@ -297,6 +298,46 @@ namespace UR3eVR
                 {
                     activeResizingWindow.EndResize();
                     activeResizingWindow = null;
+                }
+            }
+
+            // Handle active Slider dragging via Laser Pointer
+            if (activeDraggingSlider != null)
+            {
+                bool isStillHeld = OVRInput.Get(OVRInput.Button.PrimaryIndexTrigger, controller)
+                                || OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, controller) > 0.35f;
+                try { isStillHeld |= Input.GetMouseButton(0); } catch { }
+
+                if (isStillHeld && activeDraggingSlider != null && activeDraggingSlider.gameObject.activeInHierarchy && activeDraggingSlider.interactable)
+                {
+                    UpdateSliderDrag(rayOrigin, rayDir, activeDraggingSlider);
+
+                    Vector3 handlePos = activeDraggingSlider.handleRect != null
+                        ? activeDraggingSlider.handleRect.position
+                        : activeDraggingSlider.transform.position;
+
+                    lineRenderer.enabled = true;
+                    lineRenderer.SetPosition(0, rayOrigin);
+                    lineRenderer.SetPosition(1, handlePos);
+                    SetVisualColors(clickLaserColor);
+
+                    if (reticleObj != null)
+                    {
+                        reticleObj.SetActive(true);
+                        Vector3 norm = activeDraggingSlider.transform.forward;
+                        if (Vector3.Dot(norm, rayDir) > 0f) norm = -norm;
+                        reticleObj.transform.position = handlePos + norm * 0.003f;
+                        reticleObj.transform.rotation = Quaternion.LookRotation(norm, Vector3.up);
+                        currentReticleScale = Mathf.Lerp(currentReticleScale, 1.35f, Time.deltaTime * 18f);
+                        reticleObj.transform.localScale = Vector3.one * currentReticleScale;
+                    }
+
+                    wasTriggerDown = isTriggerDown;
+                    return;
+                }
+                else
+                {
+                    activeDraggingSlider = null;
                 }
             }
 
@@ -315,12 +356,22 @@ namespace UR3eVR
             // Handle Hover State Transitions
             UpdateHoverStates(hitSelectable, hitDragger, hitResizer);
 
-            // Trigger Pressed: Click UI Button, Resize Window, or Begin Window Drag
+            // Trigger Pressed: Click UI Button, Resize Window, Drag Slider, or Begin Window Drag
             if (isTriggerJustPressed)
             {
                 if (hitSelectable != null)
                 {
-                    ExecuteButtonClick(hitSelectable);
+                    Slider hitSlider = hitSelectable as Slider ?? hitSelectable.GetComponentInParent<Slider>();
+                    if (hitSlider != null && hitSlider.interactable)
+                    {
+                        activeDraggingSlider = hitSlider;
+                        UpdateSliderDrag(rayOrigin, rayDir, hitSlider);
+                        HapticPulse(0.35f, 0.05f);
+                    }
+                    else
+                    {
+                        ExecuteButtonClick(hitSelectable);
+                    }
                 }
                 else if (hitResizer != null)
                 {
@@ -447,7 +498,7 @@ namespace UR3eVR
             Vector3 bestInteractableNormal = -ray.direction;
 
             // 1. Raycast all active Selectables (Buttons, Toggles, etc.) FIRST with priority
-            var selectables = FindObjectsByType<Selectable>(FindObjectsSortMode.None);
+            var selectables = FindObjectsByType<Selectable>();
             foreach (var sel in selectables)
             {
                 if (sel == null || !sel.gameObject.activeInHierarchy || !sel.interactable) continue;
@@ -472,7 +523,7 @@ namespace UR3eVR
             // 2. Raycast VRWindowResizers if no button was hit (Corner resize handles)
             if (bestSel == null)
             {
-                var resizers = FindObjectsByType<VRWindowResizer>(FindObjectsSortMode.None);
+                var resizers = FindObjectsByType<VRWindowResizer>();
                 foreach (var r in resizers)
                 {
                     if (r == null || !r.gameObject.activeInHierarchy) continue;
@@ -498,7 +549,7 @@ namespace UR3eVR
             // 3. Raycast VRWindowDraggers ONLY if no button or resizer was hit
             if (bestSel == null && bestResizer == null)
             {
-                var draggers = FindObjectsByType<VRWindowDragger>(FindObjectsSortMode.None);
+                var draggers = FindObjectsByType<VRWindowDragger>();
                 foreach (var d in draggers)
                 {
                     if (d == null || !d.gameObject.activeInHierarchy) continue;
@@ -530,16 +581,80 @@ namespace UR3eVR
                 hitDragger = bestDragger;
                 hitResizer = bestResizer;
 
-                // Item 1: Magnetic Snap to Button Center
+                // Item 1: Magnetic Snap to Button Center or Slider Handle
                 if (bestSel != null)
                 {
-                    RectTransform srt = bestSel.GetComponent<RectTransform>();
-                    if (srt != null)
+                    Slider selSlider = bestSel as Slider ?? bestSel.GetComponentInParent<Slider>();
+                    if (selSlider != null)
                     {
-                        Vector3 buttonCenter = srt.position;
-                        if (snappedEndPoint == Vector3.zero) snappedEndPoint = bestInteractableHit;
-                        snappedEndPoint = Vector3.Lerp(snappedEndPoint, buttonCenter, Time.deltaTime * 20f);
-                        endPoint = snappedEndPoint;
+                        RectTransform handleRT = selSlider.handleRect;
+                        RectTransform trackRT = handleRT != null && handleRT.parent is RectTransform parentRT
+                            ? parentRT
+                            : selSlider.GetComponent<RectTransform>();
+
+                        if (handleRT != null && trackRT != null)
+                        {
+                            Vector3 handlePos = handleRT.position;
+                            Vector3[] hCorners = new Vector3[4];
+                            handleRT.GetWorldCorners(hCorners);
+                            float handleWidth = (hCorners[3] - hCorners[0]).magnitude;
+                            float handleHeight = (hCorners[1] - hCorners[0]).magnitude;
+
+                            // Snap radius around the white handle (generous for effortless VR grabbing)
+                            float snapRadius = Mathf.Max(handleWidth * 2.5f, handleHeight * 1.5f);
+                            float distToHandle = Vector3.Distance(bestInteractableHit, handlePos);
+
+                            if (distToHandle <= snapRadius)
+                            {
+                                // Magnetically snap directly to the white handle!
+                                Vector3 snapTarget = handlePos;
+                                if (snappedEndPoint == Vector3.zero) snappedEndPoint = bestInteractableHit;
+                                snappedEndPoint = Vector3.Lerp(snappedEndPoint, snapTarget, Time.deltaTime * 24f);
+                                endPoint = snappedEndPoint;
+                            }
+                            else
+                            {
+                                // Outside handle proximity: Snap smoothly along the track center line
+                                Vector3[] tCorners = new Vector3[4];
+                                trackRT.GetWorldCorners(tCorners);
+                                Vector3 leftPt = (tCorners[0] + tCorners[1]) * 0.5f;
+                                Vector3 rightPt = (tCorners[2] + tCorners[3]) * 0.5f;
+                                Vector3 trackVec = rightPt - leftPt;
+                                float trackLen = trackVec.magnitude;
+
+                                if (trackLen > 0.001f)
+                                {
+                                    Vector3 trackDirNorm = trackVec / trackLen;
+                                    float proj = Vector3.Dot(bestInteractableHit - leftPt, trackDirNorm);
+                                    proj = Mathf.Clamp(proj, 0f, trackLen);
+                                    Vector3 projectedOnTrack = leftPt + trackDirNorm * proj;
+
+                                    if (snappedEndPoint == Vector3.zero) snappedEndPoint = bestInteractableHit;
+                                    snappedEndPoint = Vector3.Lerp(snappedEndPoint, projectedOnTrack, Time.deltaTime * 24f);
+                                    endPoint = snappedEndPoint;
+                                }
+                                else
+                                {
+                                    endPoint = bestInteractableHit;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            endPoint = bestInteractableHit;
+                        }
+                    }
+                    else
+                    {
+                        // Standard Buttons, Toggles: Magnetic Snap to Button Center
+                        RectTransform srt = bestSel.GetComponent<RectTransform>();
+                        if (srt != null)
+                        {
+                            Vector3 buttonCenter = srt.position;
+                            if (snappedEndPoint == Vector3.zero) snappedEndPoint = bestInteractableHit;
+                            snappedEndPoint = Vector3.Lerp(snappedEndPoint, buttonCenter, Time.deltaTime * 20f);
+                            endPoint = snappedEndPoint;
+                        }
                     }
                 }
                 else
@@ -561,7 +676,7 @@ namespace UR3eVR
             Vector3 bestCanvasNormal = -ray.direction;
             bool hitCanvas = false;
 
-            var canvases = FindObjectsByType<Canvas>(FindObjectsSortMode.None);
+            var canvases = FindObjectsByType<Canvas>();
             foreach (var c in canvases)
             {
                 if (c == null || !c.gameObject.activeInHierarchy || c.renderMode != RenderMode.WorldSpace) continue;
@@ -608,6 +723,8 @@ namespace UR3eVR
             // Transition Selectable Hover
             if (newSelectable != currentHoverSelectable)
             {
+                snappedEndPoint = Vector3.zero;
+
                 if (currentHoverSelectable != null && EventSystem.current != null)
                 {
                     ExecuteEvents.Execute(currentHoverSelectable.gameObject, pointerEventData, ExecuteEvents.pointerExitHandler);
@@ -719,6 +836,61 @@ namespace UR3eVR
                 OVRInput.SetControllerVibration(0, 0, controller);
             }
             catch { }
+        }
+
+        private void UpdateSliderDrag(Vector3 rayOrigin, Vector3 rayDir, Slider slider)
+        {
+            if (slider == null || !slider.interactable) return;
+
+            RectTransform handleRT = slider.handleRect;
+            RectTransform trackRT = handleRT != null && handleRT.parent is RectTransform parentRT
+                ? parentRT
+                : slider.GetComponent<RectTransform>();
+
+            if (trackRT == null) return;
+
+            Vector3[] corners = new Vector3[4];
+            trackRT.GetWorldCorners(corners);
+            // corners: 0=bottom-left, 1=top-left, 2=top-right, 3=bottom-right
+
+            Vector3 leftPt = (corners[0] + corners[1]) * 0.5f;
+            Vector3 rightPt = (corners[2] + corners[3]) * 0.5f;
+            Vector3 trackVec = rightPt - leftPt;
+            float trackLen = trackVec.magnitude;
+            if (trackLen < 0.0001f) return;
+
+            Vector3 trackDir = trackVec / trackLen;
+
+            Vector3 upVec = corners[1] - corners[0];
+            Vector3 normal = Vector3.Cross(trackDir, upVec.normalized).normalized;
+            if (normal.sqrMagnitude < 0.001f) normal = trackRT.forward;
+            if (Vector3.Dot(normal, rayDir) > 0f) normal = -normal;
+
+            Plane plane = new Plane(normal, leftPt);
+            Ray ray = new Ray(rayOrigin, rayDir);
+
+            if (plane.Raycast(ray, out float enter))
+            {
+                Vector3 hitPoint = ray.GetPoint(enter);
+                float proj = Vector3.Dot(hitPoint - leftPt, trackDir);
+                float t = Mathf.Clamp01(proj / trackLen);
+
+                if (slider.direction == Slider.Direction.RightToLeft)
+                {
+                    t = 1.0f - t;
+                }
+
+                float targetVal = Mathf.Lerp(slider.minValue, slider.maxValue, t);
+                if (slider.wholeNumbers)
+                {
+                    targetVal = Mathf.Round(targetVal);
+                }
+
+                if (Mathf.Abs(slider.value - targetVal) > 0.001f)
+                {
+                    slider.value = targetVal;
+                }
+            }
         }
     }
 }

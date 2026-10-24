@@ -261,7 +261,7 @@ namespace UR3eVR
         {
             bool controllerActive = allowControllerTeleoperation &&
                                     rightControllerAnchor != null &&
-                                    OVRInput.GetControllerPositionTracked(OVRInput.Controller.RTouch);
+                                    VRHandStereoFixer.IsRightControllerInHand;
             if (controllerActive)
             {
                 isUsingController = true;
@@ -323,45 +323,57 @@ namespace UR3eVR
             // ========================================================
             if (enableLeftControllerActions)
             {
-                // 1. ปุ่ม X (Button Three / RawButton.X / KeyCode.X): Set Origin Point & Robot Safe Home
+                // 1. Set Origin Point & Robot Safe Home (Default: X)
                 bool xPressed = false;
-                try
+                try { xPressed = VRKeybindManager.IsActionDown(VRAction.SetOrigin); } catch { }
+                if (!xPressed)
                 {
-                    xPressed = OVRInput.GetDown(OVRInput.Button.Three, OVRInput.Controller.LTouch) ||
-                               OVRInput.GetDown(OVRInput.RawButton.X, OVRInput.Controller.LTouch) ||
-                               Input.GetKeyDown(KeyCode.X);
+                    try
+                    {
+                        xPressed = OVRInput.GetDown(OVRInput.Button.Three, OVRInput.Controller.LTouch) ||
+                                   OVRInput.GetDown(OVRInput.RawButton.X, OVRInput.Controller.LTouch) ||
+                                   Input.GetKeyDown(KeyCode.X);
+                    }
+                    catch { }
                 }
-                catch { }
 
                 if (xPressed)
                 {
                     ExecuteSetOriginAndHome();
                 }
 
-                // 2. ปุ่ม Y (Button Four / RawButton.Y / KeyCode.Y): Pause / Resume Teleoperation
+                // 2. Pause / Resume Teleoperation (Default: Y)
                 bool yPressed = false;
-                try
+                try { yPressed = VRKeybindManager.IsActionDown(VRAction.PauseResume); } catch { }
+                if (!yPressed)
                 {
-                    yPressed = OVRInput.GetDown(OVRInput.Button.Four, OVRInput.Controller.LTouch) ||
-                               OVRInput.GetDown(OVRInput.RawButton.Y, OVRInput.Controller.LTouch) ||
-                               Input.GetKeyDown(KeyCode.Y);
+                    try
+                    {
+                        yPressed = OVRInput.GetDown(OVRInput.Button.Four, OVRInput.Controller.LTouch) ||
+                                   OVRInput.GetDown(OVRInput.RawButton.Y, OVRInput.Controller.LTouch) ||
+                                   Input.GetKeyDown(KeyCode.Y);
+                    }
+                    catch { }
                 }
-                catch { }
 
                 if (yPressed)
                 {
                     ToggleTeleoperationPause();
                 }
 
-                // 3. ปุ่มกดตรง Joy Stick ที่เลื่อน (Thumbstick Click / KeyCode.K): เขย่าสารอัตโนมัติ 3 รอบ
+                // 3. Shake Test Tube: เขย่าสารอัตโนมัติ 3 รอบ (Default: Left Stick Click)
                 bool thumbstickPressed = false;
-                try
+                try { thumbstickPressed = VRKeybindManager.IsActionDown(VRAction.ShakeTestTube); } catch { }
+                if (!thumbstickPressed)
                 {
-                    thumbstickPressed = OVRInput.GetDown(OVRInput.Button.PrimaryThumbstick, OVRInput.Controller.LTouch) ||
-                                         OVRInput.GetDown(OVRInput.RawButton.LThumbstick, OVRInput.Controller.LTouch) ||
-                                         Input.GetKeyDown(KeyCode.K);
+                    try
+                    {
+                        thumbstickPressed = OVRInput.GetDown(OVRInput.Button.PrimaryThumbstick, OVRInput.Controller.LTouch) ||
+                                             OVRInput.GetDown(OVRInput.RawButton.LThumbstick, OVRInput.Controller.LTouch) ||
+                                             Input.GetKeyDown(KeyCode.K);
+                    }
+                    catch { }
                 }
-                catch { }
 
                 if (thumbstickPressed)
                 {

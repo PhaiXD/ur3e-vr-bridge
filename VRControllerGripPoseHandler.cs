@@ -79,10 +79,8 @@ namespace UR3eVR
 
         private void EnableNativeControllerHandPoses()
         {
-            if (OVRManager.instance != null)
-            {
-                OVRManager.instance.controllerDrivenHandPosesType = OVRManager.ControllerDrivenHandPosesType.Natural;
-            }
+            // Do not override global controllerDrivenHandPosesType to Natural,
+            // as this forces bare hands to conform to synthetic controller poses.
         }
     }
 }

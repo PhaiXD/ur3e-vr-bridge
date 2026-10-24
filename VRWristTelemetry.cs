@@ -20,6 +20,8 @@ namespace UR3eVR
         [Header("Data References")]
         public GripperBridge gripperBridge;
         public VRHandMover vrHandMover;
+        public UR3eStarterPoint starterPoint;
+        public PinchDetector pinchDetector;
 
         [Header("Wrist Gaze Activation Settings")]
         [Tooltip("มุมระหว่างหน้าปัดนาฬิกากับสายตาผู้ใช้ (องศา) ที่จะเริ่มแสดงผล")]
@@ -30,9 +32,21 @@ namespace UR3eVR
         [Range(60f, 100f)]
         public float hideAngleThreshold = 80f;
 
-        [Header("HUD Placement Offset")]
-        public Vector3 wristOffset = new Vector3(0.015f, 0.045f, -0.055f);
-        public Vector3 wristRotationOffset = new Vector3(-35f, 90f, 90f);
+        [Header("Controller Mode Placement (Left Remote)")]
+        [Tooltip("ตำแหน่งหน้าปัดบนข้อมือเมื่อถือรีโมทซ้าย (ลอยอยู่หลังด้ามรีโมท ไม่ซ้อนกับโมเดล)")]
+        public Vector3 controllerWristOffset = new Vector3(-0.015f, 0.075f, -0.15f);
+        public Vector3 controllerRotationOffset = new Vector3(60f, -115f, -20f);
+
+        [Header("Bare Hand Mode Placement (Optical Tracking)")]
+        [Tooltip("ตำแหน่งหน้าปัดบนข้อมือเมื่อเป็นมือเปล่า")]
+        public Vector3 handWristOffset = new Vector3(0.00f, 0.055f, -0.06f);
+        public Vector3 handRotationOffset = new Vector3(60f, -115f, -20f);
+
+        [Header("Display Alignment")]
+        [Tooltip("ปรับหน้าจอให้หันเข้าหาสายตาผู้ใช้โดยอัตโนมัติเมื่อพลิกข้อมือมอง เพื่อให้อ่านง่าย 100% ตัวหนังสือไม่กลับด้าน")]
+        public bool alignToEyesOnGlance = true;
+
+        [Header("HUD Scale")]
         public float hudScale = 0.00045f;
 
         [Header("UI References")]
@@ -40,6 +54,7 @@ namespace UR3eVR
         private CanvasGroup canvasGroup;
         private Text robotStatusText;
         private Text modeBadgeText;
+        private Text posAndErrorText;
         private Text speedText;
         private Text gripperText;
         private Text forceAndStateText;
@@ -82,6 +97,8 @@ namespace UR3eVR
         {
             if (gripperBridge == null) gripperBridge = FindAnyObjectByType<GripperBridge>();
             if (vrHandMover == null) vrHandMover = FindAnyObjectByType<VRHandMover>();
+            if (starterPoint == null) starterPoint = FindAnyObjectByType<UR3eStarterPoint>();
+            if (pinchDetector == null) pinchDetector = FindAnyObjectByType<PinchDetector>();
 
             var rig = FindAnyObjectByType<OVRCameraRig>();
             if (rig != null)
@@ -121,7 +138,7 @@ namespace UR3eVR
             canvasGroup.alpha = 0f;
 
             RectTransform cRT = hudObj.GetComponent<RectTransform>();
-            cRT.sizeDelta = new Vector2(240f, 150f);
+            cRT.sizeDelta = new Vector2(250f, 175f);
             cRT.localScale = Vector3.one * hudScale;
 
             // Background Frosted Obsidian Card
@@ -172,7 +189,10 @@ namespace UR3eVR
 
             modeBadgeText = CreateText(topRow.transform, "[REMOTE]", 11, new Color(0.7f, 0.85f, 1.0f), TextAnchor.MiddleRight);
 
-            // 2. Middle Row: Speed Display with Mini Bar
+            // 2. Robot Position & Safe Home Row
+            posAndErrorText = CreateText(content.transform, "📍 [OFF-HOME] 0, 0, 0 mm (Δ0mm)", 11, new Color(0.80f, 0.95f, 1.0f), TextAnchor.MiddleLeft);
+
+            // 3. Speed Display with Mini Bar
             GameObject speedRow = new GameObject("SpeedRow");
             speedRow.transform.SetParent(content.transform, false);
             var hlgSpeed = speedRow.AddComponent<HorizontalLayoutGroup>();
@@ -209,20 +229,41 @@ namespace UR3eVR
 
         private void LateUpdate()
         {
-            if (leftWristAnchor == null || headTransform == null)
+            bool isController = VRHandStereoFixer.IsLeftControllerInHand;
+
+            // Pick appropriate tracking anchor based on mode
+            Transform currentAnchor = null;
+            var rig = FindAnyObjectByType<OVRCameraRig>();
+            if (isController)
+            {
+                if (rig != null) currentAnchor = rig.leftControllerInHandAnchor ?? rig.leftControllerAnchor;
+                if (currentAnchor == null) currentAnchor = GameObject.Find("LeftControllerAnchor")?.transform;
+            }
+            else
+            {
+                if (rig != null) currentAnchor = rig.leftHandAnchor;
+                if (currentAnchor == null) currentAnchor = GameObject.Find("[BuildingBlock] Hand Tracking left")?.transform;
+            }
+
+            if (currentAnchor == null) currentAnchor = leftWristAnchor;
+            if (currentAnchor == null || headTransform == null)
             {
                 FindReferences();
                 if (leftWristAnchor == null || headTransform == null) return;
+                currentAnchor = leftWristAnchor;
             }
 
-            // Follow Left Wrist Position & Orientation
-            transform.position = leftWristAnchor.TransformPoint(wristOffset);
-            transform.rotation = leftWristAnchor.rotation * Quaternion.Euler(wristRotationOffset);
+            // 1. Position on wrist (completely clear of controller body)
+            Vector3 targetOffset = isController ? controllerWristOffset : handWristOffset;
+            transform.position = currentAnchor.TransformPoint(targetOffset);
 
-            // Check Smartwatch Glance Angle (vector from wrist to eyes vs wrist display normal)
-            Vector3 displayNormal = transform.forward;
+            // 2. Physical Wrist Glance Detection
+            Vector3 activeRotEuler = isController ? controllerRotationOffset : handRotationOffset;
+            Quaternion wristRot = currentAnchor.rotation * Quaternion.Euler(activeRotEuler);
+            Vector3 wristScreenNormal = wristRot * Vector3.back; // FRONT of screen
+
             Vector3 toEyes = (headTransform.position - transform.position).normalized;
-            float angle = Vector3.Angle(displayNormal, toEyes);
+            float angle = Vector3.Angle(wristScreenNormal, toEyes);
 
             bool editorOverride = false;
             try { editorOverride = Input.GetKey(KeyCode.U); } catch { }
@@ -236,12 +277,28 @@ namespace UR3eVR
                 isVisible = false;
             }
 
-            // Smooth Fade In / Out
+            // 3. Rotation: If alignToEyesOnGlance and visible, gently face user's eyes for 100% legibility;
+            // otherwise follow physical wrist rotation.
+            if (alignToEyesOnGlance && (isVisible || currentAlpha > 0.05f))
+            {
+                Vector3 lookDir = transform.position - headTransform.position;
+                if (lookDir.sqrMagnitude > 1e-4f)
+                {
+                    Quaternion targetEyeRot = Quaternion.LookRotation(lookDir, headTransform.up);
+                    transform.rotation = Quaternion.Slerp(transform.rotation, targetEyeRot, Time.deltaTime * 14f);
+                }
+            }
+            else
+            {
+                transform.rotation = wristRot;
+            }
+
+            // 4. Smooth Fade In / Out
             float targetAlpha = isVisible ? 1.0f : 0.0f;
             currentAlpha = Mathf.MoveTowards(currentAlpha, targetAlpha, Time.deltaTime * (isVisible ? 7f : 5f));
             if (canvasGroup != null) canvasGroup.alpha = currentAlpha;
 
-            // Only update live metrics when visible or fading
+            // 5. Only update live metrics when visible or fading
             if (currentAlpha > 0.01f)
             {
                 UpdateMetrics();
@@ -263,6 +320,16 @@ namespace UR3eVR
                 modeBadgeText.text = isCtrl ? "[TOUCH REMOTE]" : "[BARE HAND]";
             }
 
+            if (posAndErrorText != null)
+            {
+                Vector3 actMm = (gripperBridge != null) ? gripperBridge.actualRobotPos * 1000f : Vector3.zero;
+                Vector3 tgtMm = (vrHandMover != null) ? vrHandMover.currentTargetPos * 1000f : Vector3.zero;
+                float posErrMm = Vector3.Distance(tgtMm, actMm);
+                bool isHome = (starterPoint != null && starterPoint.isAtHome);
+                string homeBadge = isHome ? "<color=#00FF88>HOME</color>" : "<color=#00D4FF>OFF-HOME</color>";
+                posAndErrorText.text = $"📍 [{homeBadge}] {actMm.x:F0},{actMm.y:F0},{actMm.z:F0}mm (Δ{posErrMm:F0}mm)";
+            }
+
             int spdPct = (gripperBridge != null) ? gripperBridge.currentSpeedPct : 100;
             if (speedText != null)
             {
@@ -281,7 +348,8 @@ namespace UR3eVR
                 int gripPos = (gripperBridge != null) ? gripperBridge.actualGripperPos : 0;
                 bool isLocked = (gripperBridge != null && gripperBridge.isGripperLocked);
                 string lockBadge = isLocked ? "<color=#FFD700>🔒 LOCKED</color>" : "<color=#00E5FF>🔓 FREE</color>";
-                gripperText.text = $"🖐️ GRIP: {gripPos:D3}/255 | {lockBadge}";
+                string pinchInfo = (pinchDetector != null) ? $" ({pinchDetector.normalizedPinch * 100f:F0}%)" : "";
+                gripperText.text = $"🖐️ GRIP: {gripPos:D3}/255{pinchInfo} | {lockBadge}";
             }
 
             if (forceAndStateText != null)

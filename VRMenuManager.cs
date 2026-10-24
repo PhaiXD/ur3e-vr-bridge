@@ -143,12 +143,6 @@ namespace UR3eVR
             AddLog("SYSTEM", "VR Menu System Initialized (Stereo Dual-Eye Active).");
         }
 
-        private void OnDestroy()
-        {
-            GripperBridge.OnAlertReceived -= HandleAlertReceived;
-            GripperBridge.OnLogReceived -= HandleLogReceived;
-        }
-
         private void FindReferences()
         {
             if (centerEyeCamera == null)
@@ -192,6 +186,29 @@ namespace UR3eVR
                 esObj.AddComponent<EventSystem>();
                 esObj.AddComponent<StandaloneInputModule>();
             }
+
+            if (VRKeybindManager.Instance != null)
+            {
+                VRKeybindManager.Instance.onKeybindsChanged += RefreshKeybindUI;
+                VRKeybindManager.Instance.onListeningStateChanged += OnKeybindListeningChanged;
+            }
+        }
+
+        private void OnDestroy()
+        {
+            GripperBridge.OnAlertReceived -= HandleAlertReceived;
+            GripperBridge.OnLogReceived -= HandleLogReceived;
+
+            if (VRKeybindManager.Instance != null)
+            {
+                VRKeybindManager.Instance.onKeybindsChanged -= RefreshKeybindUI;
+                VRKeybindManager.Instance.onListeningStateChanged -= OnKeybindListeningChanged;
+            }
+        }
+
+        private void OnKeybindListeningChanged(bool isListening, VRAction action)
+        {
+            RefreshKeybindUI();
         }
 
         private void LoadFont()
@@ -250,27 +267,23 @@ namespace UR3eVR
 
         private void Update()
         {
-            // 1. Toggle Menu Button: Left Controller (3 horizontal lines / Hamburger button) or 'M' Key
+            // 1. Toggle Menu Button: Rebindable via VRKeybindManager (Default: Left Menu / M Key)
             bool menuPressed = false;
-            try
+            try { menuPressed = VRKeybindManager.IsActionDown(VRAction.OpenMenu); } catch { }
+            if (!menuPressed)
             {
-                if (OVRInput.GetDown(menuButton, OVRInput.Controller.LTouch) ||
-                    OVRInput.GetDown(rawMenuButton) ||
-                    OVRInput.GetDown(menuButton, OVRInput.Controller.Touch))
+                try
                 {
-                    menuPressed = true;
+                    if (OVRInput.GetDown(menuButton, OVRInput.Controller.LTouch) ||
+                        OVRInput.GetDown(rawMenuButton) ||
+                        OVRInput.GetDown(menuButton, OVRInput.Controller.Touch) ||
+                        Input.GetKeyDown(keyboardMenuKey))
+                    {
+                        menuPressed = true;
+                    }
                 }
+                catch { }
             }
-            catch { }
-
-            try
-            {
-                if (!menuPressed && Input.GetKeyDown(keyboardMenuKey))
-                {
-                    menuPressed = true;
-                }
-            }
-            catch { }
 
             if (menuPressed)
             {
@@ -664,7 +677,7 @@ namespace UR3eVR
             }
         }
 
-        private void ShowToast(string message)
+        public void ShowToast(string message)
         {
             if (toastText == null) return;
             toastText.text = message;
@@ -1748,6 +1761,10 @@ namespace UR3eVR
 
         private bool isDarkMode = true;
 
+        private readonly Dictionary<VRAction, Text> keybindBtnTexts = new Dictionary<VRAction, Text>();
+        private readonly Dictionary<VRAction, Image> keybindBtnImages = new Dictionary<VRAction, Image>();
+        private readonly Dictionary<VRAction, Outline> keybindBtnOutlines = new Dictionary<VRAction, Outline>();
+
         private void BuildSettingsPanelContent(Transform p)
         {
             CreateHeader(p, "System Settings", () => ActionCloseMenu(), () => ActionBackToMain());
@@ -1756,8 +1773,8 @@ namespace UR3eVR
             GameObject splitObj = new GameObject("SettingsSplit");
             splitObj.transform.SetParent(p, false);
             RectTransform sRT = splitObj.AddComponent<RectTransform>();
-            sRT.anchorMin = new Vector2(0.06f, 0.22f);
-            sRT.anchorMax = new Vector2(0.94f, 0.83f);
+            sRT.anchorMin = new Vector2(0.04f, 0.17f);
+            sRT.anchorMax = new Vector2(0.96f, 0.85f);
             sRT.offsetMin = Vector2.zero;
             sRT.offsetMax = Vector2.zero;
 
@@ -1777,18 +1794,33 @@ namespace UR3eVR
             ccOl.effectColor = new Color(0.0f, 0.80f, 1.0f, 0.35f);
 
             var vlgCtrl = colCtrl.AddComponent<VerticalLayoutGroup>();
-            vlgCtrl.padding = new RectOffset(16, 16, 14, 14);
-            vlgCtrl.spacing = 8;
+            vlgCtrl.padding = new RectOffset(12, 12, 10, 10);
+            vlgCtrl.spacing = 5;
             vlgCtrl.childForceExpandWidth = true;
             vlgCtrl.childForceExpandHeight = false;
 
-            CreateText(colCtrl.transform, "🎮 <b>Touch Controller Keybinds</b>", 17, new Color(0.0f, 0.9f, 1.0f), TextAnchor.MiddleLeft);
-            CreateText(colCtrl.transform, "• <b>[X Button]</b> : Set Origin / Calibrate Home", 14, Color.white, TextAnchor.MiddleLeft);
-            CreateText(colCtrl.transform, "• <b>[Y Button]</b> : Pause / Resume Teleoperation", 14, Color.white, TextAnchor.MiddleLeft);
-            CreateText(colCtrl.transform, "• <b>[Left Stick Click]</b> : Shake Test Tube", 14, Color.white, TextAnchor.MiddleLeft);
-            CreateText(colCtrl.transform, "• <b>[Left Stick Up/Down]</b> : Window Push/Pull", 14, Color.white, TextAnchor.MiddleLeft);
-            CreateText(colCtrl.transform, "• <b>[Right Middle Grip]</b> : Toggle Gripper Lock", 14, Color.white, TextAnchor.MiddleLeft);
-            CreateText(colCtrl.transform, "• <b>[Right Index Trigger]</b> : Gripper Pinch (0-255)", 14, Color.white, TextAnchor.MiddleLeft);
+            CreateText(colCtrl.transform, "🎮 <b>Touch Controller Keybinds</b>", 15, new Color(0.0f, 0.9f, 1.0f), TextAnchor.MiddleLeft);
+            CreateText(colCtrl.transform, "<i>Click any key below to rebind, then press desired button:</i>", 11, new Color(0.75f, 0.85f, 0.95f), TextAnchor.MiddleLeft);
+
+            keybindBtnTexts.Clear();
+            keybindBtnImages.Clear();
+            keybindBtnOutlines.Clear();
+
+            CreateKeybindRow(colCtrl.transform, "Set Origin / Home:", VRAction.SetOrigin);
+            CreateKeybindRow(colCtrl.transform, "Pause / Resume:", VRAction.PauseResume);
+            CreateKeybindRow(colCtrl.transform, "Shake Test Tube:", VRAction.ShakeTestTube);
+            CreateKeybindRow(colCtrl.transform, "Gripper Lock:", VRAction.ToggleGripperLock);
+            CreateKeybindRow(colCtrl.transform, "Open / Close Menu:", VRAction.OpenMenu);
+
+            CreateSimpleButton(colCtrl.transform, "↺ Reset Default Keybinds", 28, new Color(0.16f, 0.22f, 0.30f, 0.95f), new Color(0.85f, 0.92f, 1.0f), () =>
+            {
+                VRKeybindManager.Instance?.ResetDefaults();
+                RefreshKeybindUI();
+                HapticPulse(0.4f, 0.08f);
+            });
+
+            CreateText(colCtrl.transform, "• <b>[Left Stick Y]</b> : Window Push/Pull (Analog)", 11, new Color(0.6f, 0.7f, 0.8f), TextAnchor.MiddleLeft);
+            CreateText(colCtrl.transform, "• <b>[Right Trigger]</b> : Gripper Pinch 0-255 (Analog)", 11, new Color(0.6f, 0.7f, 0.8f), TextAnchor.MiddleLeft);
 
             // Column 2: Appearance Card
             GameObject colApp = new GameObject("Card_Appearance");
@@ -1818,12 +1850,138 @@ namespace UR3eVR
             GameObject botBar = new GameObject("SettingsBottomBar");
             botBar.transform.SetParent(p, false);
             RectTransform bbRT = botBar.AddComponent<RectTransform>();
-            bbRT.anchorMin = new Vector2(0.06f, 0.05f);
-            bbRT.anchorMax = new Vector2(0.94f, 0.16f);
+            bbRT.anchorMin = new Vector2(0.06f, 0.04f);
+            bbRT.anchorMax = new Vector2(0.94f, 0.14f);
             bbRT.offsetMin = Vector2.zero;
             bbRT.offsetMax = Vector2.zero;
 
-            CreateSimpleButton(botBar.transform, "◀ Back to Main Menu", 44, new Color(0.18f, 0.22f, 0.30f, 0.95f), Color.white, ActionBackToMain);
+            CreateSimpleButton(botBar.transform, "◀ Back to Main Menu", 40, new Color(0.18f, 0.22f, 0.30f, 0.95f), Color.white, ActionBackToMain);
+        }
+
+        private void CreateKeybindRow(Transform parent, string actionLabel, VRAction action)
+        {
+            GameObject row = new GameObject("Row_" + action);
+            row.transform.SetParent(parent, false);
+            var le = row.AddComponent<LayoutElement>();
+            le.minHeight = 26;
+            le.preferredHeight = 28;
+
+            var hlg = row.AddComponent<HorizontalLayoutGroup>();
+            hlg.spacing = 6;
+            hlg.childControlWidth = true;
+            hlg.childControlHeight = true;
+            hlg.childForceExpandWidth = false;
+            hlg.childForceExpandHeight = true;
+
+            // Action Label
+            GameObject labelObj = new GameObject("Label");
+            labelObj.transform.SetParent(row.transform, false);
+            var labelLE = labelObj.AddComponent<LayoutElement>();
+            labelLE.minWidth = 130;
+            labelLE.preferredWidth = 140;
+            Text lText = labelObj.AddComponent<Text>();
+            lText.font = uiFont;
+            lText.fontSize = 12;
+            lText.alignment = TextAnchor.MiddleLeft;
+            lText.color = Color.white;
+            lText.text = actionLabel;
+
+            // Rebind Button
+            GameObject btnObj = new GameObject("Btn_" + action);
+            btnObj.transform.SetParent(row.transform, false);
+            var btnLE = btnObj.AddComponent<LayoutElement>();
+            btnLE.minWidth = 140;
+            btnLE.preferredWidth = 150;
+
+            Image btnImg = btnObj.AddComponent<Image>();
+            if (roundedRectSprite != null) { btnImg.sprite = roundedRectSprite; btnImg.type = Image.Type.Sliced; }
+            btnImg.color = new Color(0.12f, 0.20f, 0.32f, 0.95f);
+
+            Outline btnOl = btnObj.AddComponent<Outline>();
+            btnOl.effectColor = new Color(0.0f, 0.80f, 1.0f, 0.40f);
+
+            Button btn = btnObj.AddComponent<Button>();
+            var cb = btn.colors;
+            cb.normalColor = Color.white;
+            cb.highlightedColor = new Color(0.2f, 0.8f, 1.0f, 1f);
+            cb.pressedColor = new Color(0.0f, 0.5f, 0.8f, 1f);
+            btn.colors = cb;
+
+            GameObject textObj = new GameObject("Text");
+            textObj.transform.SetParent(btnObj.transform, false);
+            RectTransform trt = textObj.AddComponent<RectTransform>();
+            trt.anchorMin = Vector2.zero;
+            trt.anchorMax = Vector2.one;
+            trt.offsetMin = Vector2.zero;
+            trt.offsetMax = Vector2.zero;
+            Text bText = textObj.AddComponent<Text>();
+            bText.font = uiFont;
+            bText.fontSize = 11;
+            bText.fontStyle = FontStyle.Bold;
+            bText.alignment = TextAnchor.MiddleCenter;
+            bText.color = Color.white;
+
+            VRButtonId bound = VRKeybindManager.Instance != null ? VRKeybindManager.Instance.GetBoundButton(action) : VRKeybindManager.GetDefaultButton(action);
+            bText.text = VRKeybindManager.GetButtonDisplayName(bound);
+
+            keybindBtnTexts[action] = bText;
+            keybindBtnImages[action] = btnImg;
+            keybindBtnOutlines[action] = btnOl;
+
+            btn.onClick.AddListener(() =>
+            {
+                var km = VRKeybindManager.Instance;
+                if (km == null) return;
+
+                if (km.isListening && km.listeningAction == action)
+                {
+                    km.StopListening();
+                }
+                else
+                {
+                    km.StartListening(action);
+                    ShowToast($"🟡 Press button to bind [{actionLabel}]...");
+                    HapticPulse(0.3f, 0.05f);
+                }
+                RefreshKeybindUI();
+            });
+        }
+
+        private void RefreshKeybindUI()
+        {
+            var km = VRKeybindManager.Instance;
+            if (km == null) return;
+
+            foreach (VRAction action in Enum.GetValues(typeof(VRAction)))
+            {
+                if (!keybindBtnTexts.ContainsKey(action)) continue;
+
+                Text txt = keybindBtnTexts[action];
+                Image img = keybindBtnImages.ContainsKey(action) ? keybindBtnImages[action] : null;
+                Outline ol = keybindBtnOutlines.ContainsKey(action) ? keybindBtnOutlines[action] : null;
+
+                if (km.isListening && km.listeningAction == action)
+                {
+                    if (txt != null)
+                    {
+                        txt.text = "🟡 <b>Press Button...</b>";
+                        txt.color = Color.yellow;
+                    }
+                    if (img != null) img.color = new Color(0.48f, 0.32f, 0.05f, 0.95f);
+                    if (ol != null) ol.effectColor = new Color(1f, 0.85f, 0.1f, 0.9f);
+                }
+                else
+                {
+                    VRButtonId bound = km.GetBoundButton(action);
+                    if (txt != null)
+                    {
+                        txt.text = VRKeybindManager.GetButtonDisplayName(bound);
+                        txt.color = Color.white;
+                    }
+                    if (img != null) img.color = new Color(0.12f, 0.20f, 0.32f, 0.95f);
+                    if (ol != null) ol.effectColor = new Color(0.0f, 0.80f, 1.0f, 0.40f);
+                }
+            }
         }
 
         public void ToggleDarkLightMode()

@@ -89,9 +89,23 @@ namespace UR3eVR
         [Tooltip("สถานะล็อกระดับการหนีบของ Gripper")]
         public bool isGripperLocked = false;
         public int lockedGripPos = 0;
-        private bool wasRightGripPressed = false; // Edge detection for grip button toggle
         public volatile bool isShaking = false;
         private volatile int pendingShakeLockAction = 0; // 0=none, 1=lock, 2=unlock
+
+        [Header("Left Controller Grip Lock Interaction (Middle Finger Hold)")]
+        [Tooltip("ระยะเวลาที่ต้องกด Grip ค้างเพื่อ Toggle Lock (วินาที)")]
+        public float gripLockHoldDuration = 0.85f;
+        public float gripHoldTimer = 0f;
+        public bool isGripLockArmed = true;
+        private float gripSuccessTimer = 0f;
+        private GameObject gripCircleRoot;
+        private LineRenderer gripBgCircle;
+        private LineRenderer gripFillCircle;
+        private TextMesh gripTextMesh;
+        private Transform leftAnchorCache;
+        private Transform headTransformCache;
+        private const int CIRCLE_SEGMENTS = 40;
+        private const float CIRCLE_RADIUS = 0.045f;
 
         [Header("Robot Pose Feedback (Read Only)")]
         public Vector3 actualRobotPos = Vector3.zero;
@@ -184,11 +198,29 @@ namespace UR3eVR
         private void OnDisable()
         {
             StopNetworkThread();
+            try { OVRInput.SetControllerVibration(0f, 0f, OVRInput.Controller.LTouch); } catch { }
+            HideGripCircle();
         }
 
         private void OnDestroy()
         {
             StopNetworkThread();
+            try { OVRInput.SetControllerVibration(0f, 0f, OVRInput.Controller.LTouch); } catch { }
+            if (gripCircleRoot != null) Destroy(gripCircleRoot);
+        }
+
+        public bool isUsingController
+        {
+            get
+            {
+                if (vrHandMover == null)
+                    vrHandMover = VRHandMover.Instance != null ? VRHandMover.Instance : FindAnyObjectByType<VRHandMover>();
+
+                if (vrHandMover != null)
+                    return vrHandMover.isUsingController;
+
+                return VRHandStereoFixer.IsRightControllerInHand;
+            }
         }
 
         private void Update()
@@ -207,21 +239,7 @@ namespace UR3eVR
 
             // 2. Read Gripper input: Touch Controller Index Trigger or Bare Hand Pinch
             // Determine whether user is holding Touch Controller or using Bare Hand Tracking
-            if (vrHandMover == null)
-            {
-                vrHandMover = VRHandMover.Instance != null ? VRHandMover.Instance : FindAnyObjectByType<VRHandMover>();
-            }
-
-            bool usingController = false;
-            if (vrHandMover != null && vrHandMover.isUsingController)
-            {
-                usingController = true;
-            }
-            else
-            {
-                var activeCtrl = OVRInput.GetActiveController();
-                usingController = (activeCtrl == OVRInput.Controller.RTouch || activeCtrl == OVRInput.Controller.Touch);
-            }
+            bool usingController = isUsingController;
 
             if (pendingShakeLockAction == 1)
             {
@@ -285,16 +303,6 @@ namespace UR3eVR
                         SetTargetPos(lockedGripPos);
                     }
                 }
-
-                // Toggle Gripper Lock with Grip Button (Hand Trigger / middle finger squeeze) on Right Touch Controller
-                // Uses edge detection: trigger when grip crosses 0.7 threshold rising edge
-                float rightGripVal = OVRInput.Get(OVRInput.Axis1D.PrimaryHandTrigger, OVRInput.Controller.RTouch);
-                bool rightGripPressed = (rightGripVal >= 0.7f);
-                if (rightGripPressed && !wasRightGripPressed)
-                {
-                    ToggleGripperLock();
-                }
-                wasRightGripPressed = rightGripPressed;
             }
             else if (pinchDetector != null && pinchDetector.isTracked)
             {
@@ -345,6 +353,26 @@ namespace UR3eVR
                     }
                 }
             }
+
+            // Rebindable Gripper Lock action check
+            bool actionLockDown = false;
+            try { actionLockDown = VRKeybindManager.IsActionDown(VRAction.ToggleGripperLock); } catch { }
+            if (actionLockDown)
+            {
+                bool nowLocked = ToggleGripperLock();
+                int gripPct = Mathf.RoundToInt((lockedGripPos / 255f) * 100f);
+                string msg = nowLocked ? $"🔒 Gripper Locked ({gripPct}%)" : "🔓 Gripper Unlocked (Live)";
+                VRMenuManager.Instance?.ShowToast(msg);
+                try
+                {
+                    OVRInput.SetControllerVibration(0.6f, 0.6f, OVRInput.Controller.RTouch);
+                    OVRInput.SetControllerVibration(0.6f, 0.6f, OVRInput.Controller.LTouch);
+                }
+                catch { }
+            }
+
+            // Left Controller Grip button hold with circular progress visual
+            UpdateLeftGripLockInteraction();
         }
 
         public void SetTargetPos(int pos)
@@ -372,10 +400,19 @@ namespace UR3eVR
             isGripperLocked = !isGripperLocked;
             if (isGripperLocked)
             {
-                if (pinchDetector != null && pinchDetector.isTracked)
+                if (isUsingController)
+                {
+                    float triggerVal = OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, OVRInput.Controller.RTouch);
+                    lockedGripPos = Mathf.RoundToInt(triggerVal * 255f);
+                }
+                else if (pinchDetector != null && pinchDetector.isTracked)
+                {
                     lockedGripPos = pinchDetector.gripperPos;
+                }
                 else
-                    lockedGripPos = lastSentPos >= 0 ? lastSentPos : 0;
+                {
+                    lockedGripPos = lastSentPos >= 0 ? lastSentPos : actualGripperPos;
+                }
 
                 SetTargetPos(lockedGripPos);
                 Debug.Log(string.Format("[GripperBridge] Gripper LOCKED at {0}/255", lockedGripPos));
@@ -392,6 +429,282 @@ namespace UR3eVR
             if (isGripperLocked == locked) return;
             ToggleGripperLock();
         }
+
+        #region Left Controller Grip Lock Interaction (Circle Bar)
+        private void UpdateLeftGripLockInteraction()
+        {
+            // Find references if null
+            if (leftAnchorCache == null)
+            {
+                var rig = FindAnyObjectByType<OVRCameraRig>();
+                if (rig != null) leftAnchorCache = rig.leftControllerInHandAnchor ?? rig.leftControllerAnchor ?? rig.leftHandAnchor;
+                if (leftAnchorCache == null)
+                {
+                    string[] possible = { "LeftControllerInHandAnchor", "LeftControllerAnchor", "LeftHandAnchor" };
+                    foreach (var n in possible)
+                    {
+                        var found = GameObject.Find(n);
+                        if (found != null) { leftAnchorCache = found.transform; break; }
+                    }
+                }
+            }
+
+            if (headTransformCache == null)
+            {
+                if (Camera.main != null) headTransformCache = Camera.main.transform;
+                else
+                {
+                    var ce = GameObject.Find("CenterEyeAnchor");
+                    if (ce != null) headTransformCache = ce.transform;
+                }
+            }
+
+            // Check Left Grip Button input (Middle finger / Hand Trigger on Left Controller)
+            float leftGrip = OVRInput.Get(OVRInput.Axis1D.PrimaryHandTrigger, OVRInput.Controller.LTouch);
+            bool isGripHeld = (leftGrip >= 0.55f) || OVRInput.Get(OVRInput.Button.PrimaryHandTrigger, OVRInput.Controller.LTouch);
+            try { isGripHeld |= Input.GetKey(KeyCode.G) || Input.GetKey(KeyCode.L); } catch { }
+
+            // Do not trigger lock if actively dragging a window
+            if (VRWindowDragger.ActiveDragger != null) isGripHeld = false;
+
+            if (isGripHeld)
+            {
+                if (isGripLockArmed)
+                {
+                    gripHoldTimer += Time.deltaTime;
+                    float progress = Mathf.Clamp01(gripHoldTimer / gripLockHoldDuration);
+
+                    // Light haptic tick while holding
+                    try { OVRInput.SetControllerVibration(0.12f, 0.12f, OVRInput.Controller.LTouch); } catch { }
+
+                    UpdateGripCircleVisual(progress, false);
+
+                    if (gripHoldTimer >= gripLockHoldDuration)
+                    {
+                        isGripLockArmed = false;
+                        bool nowLocked = ToggleGripperLock();
+
+                        // Strong haptic pulse on success
+                        try { OVRInput.SetControllerVibration(0.85f, 0.85f, OVRInput.Controller.LTouch); } catch { }
+
+                        gripSuccessTimer = 1.2f;
+                        UpdateGripCircleVisual(1.0f, true);
+
+                        int gripPct = Mathf.RoundToInt((lockedGripPos / 255f) * 100f);
+                        string msg = nowLocked ? $"🔒 Gripper Locked ({gripPct}%)" : "🔓 Gripper Unlocked (Live)";
+                        VRMenuManager.Instance?.ShowToast(msg);
+                    }
+                }
+                else
+                {
+                    // Keep success feedback alive while user still holds
+                    if (gripSuccessTimer > 0f)
+                    {
+                        gripSuccessTimer -= Time.deltaTime;
+                        UpdateGripCircleVisual(1.0f, true);
+                    }
+                    else
+                    {
+                        HideGripCircle();
+                    }
+                }
+            }
+            else
+            {
+                // Released grip trigger
+                isGripLockArmed = true;
+                try { OVRInput.SetControllerVibration(0f, 0f, OVRInput.Controller.LTouch); } catch { }
+
+                if (gripSuccessTimer > 0f)
+                {
+                    gripSuccessTimer -= Time.deltaTime;
+                    UpdateGripCircleVisual(1.0f, true);
+                }
+                else
+                {
+                    gripHoldTimer = 0f;
+                    HideGripCircle();
+                }
+            }
+        }
+
+        private void EnsureGripCircleVisuals()
+        {
+            if (gripCircleRoot != null) return;
+
+            gripCircleRoot = new GameObject("LeftGrip_LockCircle");
+            gripCircleRoot.transform.SetParent(transform);
+
+            Shader unlitShader = Shader.Find("UR3eVR/StereoUnlitColor")
+                               ?? Shader.Find("Universal Render Pipeline/Unlit")
+                               ?? Shader.Find("Sprites/Default");
+
+            // Background circle
+            GameObject bgObj = new GameObject("BG_Circle");
+            bgObj.transform.SetParent(gripCircleRoot.transform);
+            gripBgCircle = bgObj.AddComponent<LineRenderer>();
+            gripBgCircle.useWorldSpace = false;
+            gripBgCircle.loop = true;
+            gripBgCircle.positionCount = CIRCLE_SEGMENTS;
+            gripBgCircle.startWidth = 0.003f;
+            gripBgCircle.endWidth = 0.003f;
+            gripBgCircle.material = new Material(unlitShader) { enableInstancing = true };
+            gripBgCircle.startColor = new Color(0.1f, 0.5f, 0.7f, 0.4f);
+            gripBgCircle.endColor = new Color(0.1f, 0.5f, 0.7f, 0.4f);
+            for (int i = 0; i < CIRCLE_SEGMENTS; i++)
+            {
+                float rad = (i / (float)CIRCLE_SEGMENTS) * Mathf.PI * 2f;
+                gripBgCircle.SetPosition(i, new Vector3(Mathf.Cos(rad) * CIRCLE_RADIUS, Mathf.Sin(rad) * CIRCLE_RADIUS, 0f));
+            }
+
+            // Fill arc circle
+            GameObject fillObj = new GameObject("Fill_Circle");
+            fillObj.transform.SetParent(gripCircleRoot.transform);
+            gripFillCircle = fillObj.AddComponent<LineRenderer>();
+            gripFillCircle.useWorldSpace = false;
+            gripFillCircle.loop = false;
+            gripFillCircle.positionCount = 0;
+            gripFillCircle.startWidth = 0.005f;
+            gripFillCircle.endWidth = 0.005f;
+            gripFillCircle.material = new Material(unlitShader) { enableInstancing = true };
+
+            // Text
+            GameObject textObj = new GameObject("Text_Lock");
+            textObj.transform.SetParent(gripCircleRoot.transform);
+            textObj.transform.localPosition = new Vector3(0f, 0f, -0.002f);
+            textObj.transform.localScale = Vector3.one * 0.0012f;
+            gripTextMesh = textObj.AddComponent<TextMesh>();
+            gripTextMesh.alignment = TextAlignment.Center;
+            gripTextMesh.anchor = TextAnchor.MiddleCenter;
+            gripTextMesh.fontSize = 28;
+            gripTextMesh.fontStyle = FontStyle.Bold;
+            gripTextMesh.color = Color.cyan;
+
+            var mr = textObj.GetComponent<MeshRenderer>();
+            if (mr != null)
+            {
+                Shader s = Shader.Find("UR3eVR/StereoTextShader");
+                if (s != null)
+                {
+                    Texture fTex = (gripTextMesh.font != null && gripTextMesh.font.material != null) ? gripTextMesh.font.material.mainTexture : null;
+                    Material mat = new Material(s);
+                    if (fTex != null) mat.mainTexture = fTex;
+                    mat.enableInstancing = true;
+                    mr.material = mat;
+                }
+            }
+
+            gripCircleRoot.SetActive(false);
+        }
+
+        private void UpdateGripCircleVisual(float progress, bool isSuccess)
+        {
+            EnsureGripCircleVisuals();
+            if (gripCircleRoot == null) return;
+
+            // Position ~9cm above left controller/wrist, slightly forward
+            Vector3 targetPos;
+            if (leftAnchorCache != null)
+            {
+                targetPos = leftAnchorCache.position + leftAnchorCache.up * 0.09f + leftAnchorCache.forward * 0.03f;
+            }
+            else if (headTransformCache != null)
+            {
+                targetPos = headTransformCache.position + headTransformCache.forward * 0.5f - headTransformCache.right * 0.15f;
+            }
+            else
+            {
+                targetPos = transform.position;
+            }
+
+            gripCircleRoot.transform.position = targetPos;
+
+            // Billboard towards head
+            if (headTransformCache != null)
+            {
+                Vector3 toHead = targetPos - headTransformCache.position;
+                if (toHead.sqrMagnitude > 1e-4f)
+                {
+                    gripCircleRoot.transform.rotation = Quaternion.LookRotation(toHead);
+                }
+            }
+
+            if (!gripCircleRoot.activeSelf) gripCircleRoot.SetActive(true);
+
+            int currentPct = isGripperLocked ? Mathf.RoundToInt((lockedGripPos / 255f) * 100f) : Mathf.RoundToInt((actualGripperPos / 255f) * 100f);
+
+            if (isSuccess)
+            {
+                if (isGripperLocked)
+                {
+                    Color gold = new Color(1f, 0.82f, 0.1f);
+                    gripTextMesh.text = $"LOCKED!\n({currentPct}%)";
+                    gripTextMesh.color = gold;
+                    gripBgCircle.startColor = gold;
+                    gripBgCircle.endColor = gold;
+                    UpdateGripArcFill(1f, gold);
+                }
+                else
+                {
+                    Color green = Color.green;
+                    gripTextMesh.text = "UNLOCKED!\n(Live Tracking)";
+                    gripTextMesh.color = green;
+                    gripBgCircle.startColor = green;
+                    gripBgCircle.endColor = green;
+                    UpdateGripArcFill(1f, green);
+                }
+            }
+            else
+            {
+                int fillPct = Mathf.RoundToInt(progress * 100f);
+                Color activeCol;
+                if (isGripperLocked)
+                {
+                    activeCol = Color.Lerp(new Color(1f, 0.75f, 0.1f), Color.yellow, progress);
+                    gripTextMesh.text = $"UNLOCK?\n[{fillPct}%]";
+                }
+                else
+                {
+                    activeCol = Color.Lerp(new Color(0.0f, 0.85f, 1.0f), Color.yellow, progress);
+                    gripTextMesh.text = $"LOCK GRIP\n[{fillPct}%]";
+                }
+
+                gripTextMesh.color = activeCol;
+                gripBgCircle.startColor = new Color(activeCol.r, activeCol.g, activeCol.b, 0.45f);
+                gripBgCircle.endColor = new Color(activeCol.r, activeCol.g, activeCol.b, 0.45f);
+                UpdateGripArcFill(progress, activeCol);
+            }
+        }
+
+        private void UpdateGripArcFill(float pct, Color col)
+        {
+            if (gripFillCircle == null) return;
+            int activePoints = Mathf.Clamp(Mathf.RoundToInt(pct * CIRCLE_SEGMENTS), 0, CIRCLE_SEGMENTS);
+            if (activePoints < 2)
+            {
+                gripFillCircle.positionCount = 0;
+            }
+            else
+            {
+                gripFillCircle.positionCount = activePoints + 1;
+                for (int i = 0; i <= activePoints; i++)
+                {
+                    float rad = (Mathf.PI * 0.5f) - (i / (float)CIRCLE_SEGMENTS) * Mathf.PI * 2f;
+                    gripFillCircle.SetPosition(i, new Vector3(Mathf.Cos(rad) * CIRCLE_RADIUS, Mathf.Sin(rad) * CIRCLE_RADIUS, 0f));
+                }
+            }
+            gripFillCircle.startColor = col;
+            gripFillCircle.endColor = col;
+        }
+
+        private void HideGripCircle()
+        {
+            if (gripCircleRoot != null && gripCircleRoot.activeSelf)
+            {
+                gripCircleRoot.SetActive(false);
+            }
+        }
+        #endregion
 
         public void RequestHome()
         {
