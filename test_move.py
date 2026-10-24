@@ -571,13 +571,27 @@ def execute_auto_shake(rtde_c, rtde_r, vr_server=None, tare_func=None):
             if vr_server:
                 vr_server.send_alert("INFO", f"🧪 กำลังเขย่าสาร... รอบที่ {cycle}/3 (คว่ำ 180°)")
             rtde_c.moveJ(q_inverted, SHAKE_SPEED, SHAKE_ACCEL)
-            time.sleep(0.25)
+            time.sleep(0.20)
 
             print(f"   🔄 [รอบที่ {cycle}/3] กำลังพลิกหลอดกลับ (-180°)...")
             if vr_server:
                 vr_server.send_alert("INFO", f"🧪 กำลังเขย่าสาร... รอบที่ {cycle}/3 (หงายกลับ -180°)")
             rtde_c.moveJ(q_current, SHAKE_SPEED, SHAKE_ACCEL)
-            time.sleep(0.25)
+            time.sleep(0.20)
+
+        # ตรวจสอบและหยุดคำสั่ง Trajectory ให้พร้อมรับ SpeedL ต่อเนื่อง
+        try:
+            rtde_c.speedStop(STOP_ACCEL)
+        except Exception:
+            pass
+
+        time.sleep(0.10)
+        if not rtde_c.isProgramRunning():
+            try:
+                rtde_c.reuploadScript()
+                time.sleep(0.15)
+            except Exception:
+                pass
 
         print("✅ [Auto Shake] เขย่าสารอัตโนมัติครบ 3 รอบเรียบร้อยแล้ว!")
         if vr_server:
@@ -585,6 +599,15 @@ def execute_auto_shake(rtde_c, rtde_r, vr_server=None, tare_func=None):
 
         if tare_func:
             tare_func("เสร็จสิ้นการเขย่าสารอัตโนมัติ 3 รอบ")
+
+        # ส่งพิกัด TCP สดกลับไปยัง Unity ก่อนส่ง SHAKE DONE เพื่อให้ SyncAnchorOnResume ได้ค่าที่ถูกต้องเสมอ
+        try:
+            fresh_pose = rtde_r.getActualTCPPose()
+            if vr_server:
+                vr_server.send_feedback(0, 0.0, 100, actual_tcp_pose=fresh_pose)
+                time.sleep(0.05)
+        except Exception:
+            pass
     finally:
         if vr_server:
             vr_server.send_shake_status(False)
@@ -749,7 +772,11 @@ if __name__ == "__main__":
                 print(f"🎯 [Tare Fz - {reason}]: เซ็ตศูนย์แรง Fz = {fz_tare:+.2f} N เรียบร้อย (ตัด Noise)")
                 if 'vr_server' in locals() and vr_server:
                     sp = int(round(speed_level * 100)) if 'speed_level' in locals() else 100
-                    vr_server.send_feedback(cached_gripper_pos, 0.0, sp)
+                    try:
+                        cur_p = rtde_r.getActualTCPPose()
+                    except Exception:
+                        cur_p = None
+                    vr_server.send_feedback(cached_gripper_pos, 0.0, sp, actual_tcp_pose=cur_p)
                 return True
             except Exception as e:
                 print(f"⚠️ ไม่สามารถ Tare Fz ({reason}): {e}")
@@ -871,8 +898,14 @@ if __name__ == "__main__":
                 is_pose_settled = False
                 is_rot_settled = False
                 execute_auto_shake(rtde_c, rtde_r, vr_server=vr_server, tare_func=perform_tare)
-                time.sleep(0.3)
+                time.sleep(0.10)
                 current_pose = rtde_r.getActualTCPPose()
+                with vr_vel_lock:
+                    vr_pose_state["target_pose"] = list(current_pose)
+                    vr_pose_state["last_time"] = time.time()
+                    vr_vel = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                is_pose_settled = True
+                is_rot_settled = True
                 if 'vr_server' in locals() and vr_server:
                     vr_server.send_feedback(cached_gripper_pos, smooth_grip_force, speed_pct, actual_tcp_pose=current_pose)
             prev_k_pressed = k_pressed
