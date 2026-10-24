@@ -213,21 +213,15 @@ namespace UR3eVR
             }
 
             StopCurrentStream();
-
         }
 
-
-
+        private void Start()
+        {
             FindReferences();
-
             BuildCameraWindowUI();
-
             InitializeWebcam();
-
             SetWindowOpen(true);
-
             SetTheme(PlayerPrefs.GetInt("VR_UI_DARK_MODE", 1) == 1);
-
         }
 
 
@@ -463,36 +457,15 @@ namespace UR3eVR
 
 
             // 1. Deep Obsidian Dark-Mode Frosted Glass Window Frame (Dark, Sleek, High-Contrast)
-
             bgImg = canvasObj.AddComponent<Image>();
-
             if (windowGlassSprite != null)
-
             {
-
                 bgImg.sprite = windowGlassSprite;
-
                 bgImg.type = Image.Type.Sliced;
-
                 bgImg.pixelsPerUnitMultiplier = 2f;
-
-                bgImg.material = visionWindowMaterial;
-
-                if (visionWindowMaterial != null) visionWindowMaterial.enableInstancing = true;
-
-                bgImg.color = new Color(0.06f, 0.08f, 0.14f, 0.96f); // Deep Obsidian Glass (Darker, non-glare)
-
             }
-
-            else
-
-            {
-
-                bgImg.material = null;
-
-                bgImg.color = new Color(0.06f, 0.08f, 0.12f, 0.96f);
-
-            }
+            bgImg.material = null; // Stereo-safe UI/Default shader respects vertex color!
+            bgImg.color = new Color(0.06f, 0.08f, 0.14f, 0.96f);
 
 
 
@@ -1826,13 +1799,77 @@ namespace UR3eVR
 
         public void SetTheme(bool darkMode)
         {
+            if (ActiveWindows != null && ActiveWindows.Count > 0)
+            {
+                foreach (var win in ActiveWindows)
+                {
+                    if (win != null) win.ApplyWindowTheme(darkMode);
+                }
+            }
+            else
+            {
+                ApplyWindowTheme(darkMode);
+            }
+        }
+
+        public void ApplyWindowTheme(bool darkMode)
+        {
             if (bgImg != null)
             {
-                bgImg.color = darkMode ? new Color(0.06f, 0.08f, 0.14f, 0.96f) : new Color(0.92f, 0.94f, 0.98f, 0.97f);
+                bgImg.material = null;
+                bgImg.color = darkMode ? new Color(0.06f, 0.08f, 0.14f, 0.96f) : new Color(0.93f, 0.95f, 0.98f, 0.97f);
             }
             if (bgOutline != null)
             {
                 bgOutline.effectColor = darkMode ? new Color(0.20f, 0.65f, 1.0f, 0.35f) : new Color(0.18f, 0.26f, 0.38f, 0.60f);
+            }
+            if (canvasObj != null)
+            {
+                Transform hb = canvasObj.transform.Find("HeaderBar");
+                if (hb != null)
+                {
+                    var hImg = hb.GetComponent<Image>();
+                    if (hImg != null)
+                    {
+                        hImg.material = null;
+                        hImg.color = darkMode ? new Color(0.10f, 0.14f, 0.22f, 0.95f) : new Color(0.85f, 0.88f, 0.95f, 0.98f);
+                    }
+                    var texts = hb.GetComponentsInChildren<Text>(true);
+                    foreach (var t in texts)
+                    {
+                        if (t.transform.parent != null && t.transform.parent.name.EndsWith("Btn")) continue;
+                        if (t.transform.parent != null && t.transform.parent.name == "SubText")
+                            t.color = darkMode ? new Color(0.7f, 0.8f, 0.9f) : new Color(0.25f, 0.35f, 0.45f);
+                        else
+                            t.color = darkMode ? Color.white : new Color(0.08f, 0.12f, 0.22f);
+                    }
+                    var btns = hb.GetComponentsInChildren<Button>(true);
+                    foreach (var b in btns)
+                    {
+                        if (b.name == "CloseBtn") continue;
+                        var bImg = b.GetComponent<Image>();
+                        if (bImg != null)
+                        {
+                            bImg.material = null;
+                            bImg.color = darkMode ? new Color(0.12f, 0.20f, 0.32f, 0.95f) : new Color(0.78f, 0.84f, 0.94f, 0.98f);
+                        }
+                        var bTxt = b.GetComponentInChildren<Text>();
+                        if (bTxt != null) bTxt.color = darkMode ? Color.white : new Color(0.08f, 0.12f, 0.22f);
+                    }
+                }
+
+                Transform gb = canvasObj.transform.Find("GrabHandleBar");
+                if (gb != null)
+                {
+                    var gImg = gb.GetComponent<Image>();
+                    if (gImg != null)
+                    {
+                        gImg.material = null;
+                        gImg.color = darkMode ? new Color(0.12f, 0.16f, 0.24f, 0.95f) : new Color(0.78f, 0.84f, 0.92f, 0.95f);
+                    }
+                    var gTxt = gb.GetComponentInChildren<Text>();
+                    if (gTxt != null) gTxt.color = darkMode ? new Color(0.8f, 0.9f, 1.0f, 0.85f) : new Color(0.10f, 0.15f, 0.25f, 0.90f);
+                }
             }
         }
 

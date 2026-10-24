@@ -191,6 +191,8 @@ namespace UR3eVR
 
         private void Awake()
         {
+            currentSpeedPct = Mathf.Clamp(PlayerPrefs.GetInt("UR3eVR_MotionSpeed", 100), 0, 100);
+            pendingSpeedPct = currentSpeedPct;
             if (pinchDetector == null)
             {
                 pinchDetector = GetComponent<PinchDetector>();
@@ -741,6 +743,9 @@ namespace UR3eVR
         public void SendSpeed(int speedPct)
         {
             speedPct = Mathf.Clamp(speedPct, 0, 100);
+            currentSpeedPct = speedPct;
+            PlayerPrefs.SetInt("UR3eVR_MotionSpeed", speedPct);
+            PlayerPrefs.Save();
             lock (lockObj)
             {
                 pendingSpeedPct = speedPct;
@@ -1101,7 +1106,10 @@ namespace UR3eVR
                                         {
                                             int.TryParse(parts[1], out actualGripperPos);
                                             float.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out actualGripForce);
-                                            if (parts.Length >= 4) int.TryParse(parts[3], out currentSpeedPct);
+                                            if (parts.Length >= 4 && int.TryParse(parts[3], out int parsedSpd))
+                                            {
+                                                currentSpeedPct = Mathf.Clamp(parsedSpd, 0, 100);
+                                            }
                                             if (parts.Length >= 10)
                                             {
                                                 float.TryParse(parts[4], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out actualRobotPos.x);

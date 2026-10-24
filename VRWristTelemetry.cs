@@ -210,6 +210,11 @@ namespace UR3eVR
             sBar.transform.SetParent(speedRow.transform, false);
             RectTransform sbarRT = sBar.AddComponent<RectTransform>();
             sbarRT.sizeDelta = new Vector2(90f, 10f);
+            var leSBar = sBar.AddComponent<LayoutElement>();
+            leSBar.minWidth = 90f;
+            leSBar.preferredWidth = 90f;
+            leSBar.minHeight = 10f;
+            leSBar.preferredHeight = 10f;
             Image sbarImg = sBar.AddComponent<Image>();
             sbarImg.color = new Color(0.15f, 0.20f, 0.28f, 0.95f);
 
@@ -333,14 +338,16 @@ namespace UR3eVR
                 posAndErrorText.text = $"📍 [{homeBadge}] {actMm.x:F0},{actMm.y:F0},{actMm.z:F0}mm (Δ{posErrMm:F0}mm)";
             }
 
-            int spdPct = (gripperBridge != null) ? Mathf.Clamp(gripperBridge.currentSpeedPct, 0, 100) : 100;
+            int spdPct = (gripperBridge != null) ? Mathf.Clamp(gripperBridge.currentSpeedPct, 0, 100) : Mathf.Clamp(PlayerPrefs.GetInt("UR3eVR_MotionSpeed", 100), 0, 100);
             if (speedText != null)
             {
-                speedText.text = $"⚡ SPD: {spdPct}%";
+                string maxTag = (spdPct >= 100) ? " <color=#FF3344>[MAX]</color>" : "";
+                speedText.text = $"⚡ SPD: {spdPct}%{maxTag}";
             }
             if (speedBarFill != null)
             {
-                speedBarFill.rectTransform.anchorMax = new Vector2(spdPct / 100f, 1f);
+                float fillRatio = Mathf.Clamp01(spdPct / 100f);
+                speedBarFill.rectTransform.anchorMax = new Vector2(fillRatio, 1f);
                 if (spdPct < 50) speedBarFill.color = new Color(0.0f, 1.0f, 0.55f);
                 else if (spdPct < 75) speedBarFill.color = new Color(1.0f, 0.80f, 0.0f);
                 else speedBarFill.color = new Color(1.0f, 0.25f, 0.25f);
@@ -374,6 +381,7 @@ namespace UR3eVR
         {
             if (bgImg != null)
             {
+                bgImg.material = null;
                 bgImg.color = darkMode ? new Color(0.04f, 0.07f, 0.12f, 0.95f) : new Color(0.92f, 0.94f, 0.98f, 0.96f);
             }
             if (bgOl != null)

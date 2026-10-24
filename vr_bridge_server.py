@@ -80,9 +80,10 @@ class VRBridgeServer:
         if not self.client_sock:
             return
         try:
+            clamped_spd = max(0, min(100, int(round(speed_pct))))
             if actual_tcp_pose is not None and len(actual_tcp_pose) >= 6:
                 x, y, z, rx, ry, rz = actual_tcp_pose[:6]
-                base_msg = f"STATUS {int(actual_pos)} {float(force_n):.2f} {int(speed_pct)} {x:.4f} {y:.4f} {z:.4f} {rx:.4f} {ry:.4f} {rz:.4f}"
+                base_msg = f"STATUS {int(actual_pos)} {float(force_n):.2f} {clamped_spd} {x:.4f} {y:.4f} {z:.4f} {rx:.4f} {ry:.4f} {rz:.4f}"
                 # Append safety proximity ratios if available (including Joint Rotation Limits)
                 if safety_proximity is not None:
                     o_r = safety_proximity.get("outer_ratio", 0.0)
@@ -96,7 +97,7 @@ class VRBridgeServer:
                 else:
                     msg = f"{base_msg}\n"
             else:
-                msg = f"STATUS {int(actual_pos)} {float(force_n):.2f} {int(speed_pct)}\n"
+                msg = f"STATUS {int(actual_pos)} {float(force_n):.2f} {clamped_spd}\n"
             self.client_sock.sendall(msg.encode("ascii"))
         except Exception:
             pass

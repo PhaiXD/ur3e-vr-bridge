@@ -822,7 +822,7 @@ if __name__ == "__main__":
 
         while True:
             t_loop_start = time.time()
-            speed_pct = int(round(speed_level * 100))
+            speed_pct = max(0, min(100, int(round(speed_level * 100))))
             # 1. ตรวจสอบ Protective Stop ก่อน
             if check_protective_stop(rtde_r):
                 print("\n🛑 ตรวจพบ PROTECTIVE STOP!")
@@ -1442,7 +1442,7 @@ if __name__ == "__main__":
 
             # ส่ง Smooth Force Feedback (ผ่าน UKF) กลับไปให้ Unity VR Headset และถุงมือ bHaptics Glove ทุกรอบ 50 Hz
             # พร้อมแจ้งระดับความเร็ว พิกัดจริง และอัตราส่วนความใกล้ขอบเขตความปลอดภัย (Safety Proximity)
-            speed_pct = int(round(speed_level * 100))
+            speed_pct = max(0, min(100, int(round(speed_level * 100))))
             qd_for_safety = rtde_r.getActualQd()
             safety_prox = compute_safety_proximity(current_pose, current_q, qd_for_safety)
             if 'vr_server' in locals() and vr_server:
