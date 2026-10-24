@@ -836,6 +836,15 @@ namespace UR3eVR
             {
                 starterPoint.UpdateAnchor(anchorHandWorldPos, anchorHeadYaw, anchorRobotPos);
             }
+
+            if (gripperBridge != null)
+            {
+                gripperBridge.ResetPoseCache();
+                gripperBridge.SetTargetPose(
+                    currentTargetPos.x, currentTargetPos.y, currentTargetPos.z,
+                    currentTargetRotAxisAngle.x, currentTargetRotAxisAngle.y, currentTargetRotAxisAngle.z
+                );
+            }
         }
 
         /// <summary>

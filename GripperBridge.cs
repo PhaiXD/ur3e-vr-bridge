@@ -150,6 +150,14 @@ namespace UR3eVR
         private float targetPry = 0f;
         private float targetPrz = 0f;
         private bool newPoseAvailable = false;
+        private Vector3 lastSentPosePos = new Vector3(-999f, -999f, -999f);
+        private Vector3 lastSentPoseRot = new Vector3(-999f, -999f, -999f);
+
+        public void ResetPoseCache()
+        {
+            lastSentPosePos = new Vector3(-999f, -999f, -999f);
+            lastSentPoseRot = new Vector3(-999f, -999f, -999f);
+        }
 
         [Header("Auto-Tare (Calibrate Fz when opening fingers)")]
         [Tooltip("ระดับตำแหน่งอ้านิ้วที่จะสั่ง Tare Fz อัตโนมัติ (default: 35)")]
@@ -722,6 +730,7 @@ namespace UR3eVR
                 shakeRequested = true;
             }
             isShaking = true;
+            ResetPoseCache();
             if (!isGripperLocked)
             {
                 ToggleGripperLock();
@@ -844,8 +853,7 @@ namespace UR3eVR
                     int lastSentLocal = -1;
                     DateTime lastSendTime = DateTime.UtcNow;
 
-                    Vector3 lastSentPosePos = new Vector3(-999f, -999f, -999f);
-                    Vector3 lastSentPoseRot = new Vector3(-999f, -999f, -999f);
+                    ResetPoseCache();
                     DateTime lastPoseSendTime = DateTime.MinValue;
                     bool lastMoveWasZero = false;
 
@@ -1084,6 +1092,7 @@ namespace UR3eVR
                                     {
                                         isShaking = false;
                                         pendingShakeLockAction = 2;
+                                        ResetPoseCache();
                                     }
                                     else if (line.StartsWith("STATUS"))
                                     {
