@@ -740,15 +740,6 @@ namespace UR3eVR
             Debug.Log("[GripperBridge] 🧪 RequestShake: Sending SHAKE command to UR3e robot & auto-locking gripper...");
         }
 
-        public void RequestTare()
-        {
-            lock (lockObj)
-            {
-                tareRequested = true;
-            }
-            Debug.Log("[GripperBridge] 🎯 RequestTare: Sending TARE command to zero Fz force sensor...");
-        }
-
         public void RequestPause(bool pause)
         {
             lock (lockObj)

@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
@@ -2970,7 +2971,7 @@ namespace UR3eVR
 
             if (pyDetailsText != null)
             {
-                string pyExe = (mgr != null && !string.IsNullOrEmpty(mgr.pythonExePath)) ? Path.GetFileName(mgr.pythonExePath) : "python.exe";
+                string pyExe = (mgr != null && !string.IsNullOrEmpty(mgr.pythonExePath)) ? System.IO.Path.GetFileName(mgr.pythonExePath) : "python.exe";
                 pyDetailsText.text = $"Target Robot: <b>{ip}:5005</b> | Executable: <b>{pyExe}</b> | Mode: <b>{modeStr}</b>";
             }
 
