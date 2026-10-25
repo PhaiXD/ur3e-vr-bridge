@@ -92,17 +92,17 @@ namespace UR3eVR
 
         public void ResolvePaths()
         {
-            // 1. Python Executable
+            // 1. Python Executable - Prioritize Python 3.12 where ur_rtde / rtde_control is installed
             pythonExePath = PlayerPrefs.GetString("UR3eVR_PythonExePath", "");
-            if (string.IsNullOrEmpty(pythonExePath) || !File.Exists(pythonExePath))
+            if (string.IsNullOrEmpty(pythonExePath) || !File.Exists(pythonExePath) || pythonExePath.Contains("Python314"))
             {
                 string[] candidates = new string[]
                 {
-                    @"C:\Python314\python.exe",
                     @"C:\Users\dhamm\AppData\Local\Programs\Python\Python312\python.exe",
+                    @"C:\Python312\python.exe",
                     @"C:\Users\dhamm\AppData\Local\Programs\Python\Python313\python.exe",
                     @"C:\Python313\python.exe",
-                    @"C:\Python312\python.exe"
+                    @"C:\Python314\python.exe"
                 };
 
                 foreach (var c in candidates)
@@ -118,6 +118,9 @@ namespace UR3eVR
                 {
                     pythonExePath = "python.exe"; // Fallback to PATH
                 }
+
+                PlayerPrefs.SetString("UR3eVR_PythonExePath", pythonExePath);
+                PlayerPrefs.Save();
             }
 
             // 2. Script Directory

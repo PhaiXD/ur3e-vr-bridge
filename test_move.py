@@ -3,9 +3,28 @@ import socket
 import sys
 import threading
 import time
+
+# Enable UTF-8 encoding on Windows console for Thai and emoji
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8')
+
 import keyboard
-import rtde_control
-import rtde_receive
+try:
+    import rtde_control
+    import rtde_receive
+except ModuleNotFoundError:
+    import os, subprocess, shutil
+    cand_py312 = r"C:\Users\dhamm\AppData\Local\Programs\Python\Python312\python.exe"
+    if os.path.exists(cand_py312) and cand_py312.lower() != sys.executable.lower():
+        print(f"[Auto-Redirect] Switching to Python 3.12 ({cand_py312})...")
+        sys.exit(subprocess.call([cand_py312] + sys.argv))
+    elif shutil.which("py") and "3.12" not in sys.version:
+        print("[Auto-Redirect] Switching to 'py -3.12'...")
+        sys.exit(subprocess.call([shutil.which("py"), "-3.12"] + sys.argv))
+    else:
+        raise
 from ukf_filter import UnscentedKalmanFilter1D
 from robot_safety import (
     SHOULDER_Z, SPHERE_MAX, SPHERE_MIN, CYLINDER_RADIUS, CARTESIAN_TCP_SPEED_CAP,
@@ -17,10 +36,8 @@ from robot_safety import (
     compute_safety_proximity
 )
 
-# ตั้งค่า stdout เป็น utf-8 เพื่อรองรับภาษาไทยและ emoji บน Windows Console
-sys.stdout.reconfigure(encoding="utf-8")
-
-ROBOT_IP = "192.168.1.20"
+import os
+ROBOT_IP = sys.argv[1] if (len(sys.argv) > 1 and not sys.argv[1].startswith("-")) else os.environ.get("ROBOT_IP", "192.168.1.20")
 
 # ==================== UR3e Specifications ====================
 # DH Parameters (มิลลิเมตร): d1=151.9, a2=243.6, a3=213.2, d4=131.0, d5=85.0, d6=92.1

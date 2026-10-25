@@ -11,7 +11,9 @@ UR3e VR Bridge - Main Entry Point
 """
 
 import sys
+import os
 import subprocess
+import shutil
 import argparse
 
 # Enable UTF-8 encoding on Windows console
@@ -19,6 +21,22 @@ if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8')
+
+# Ensure Python 3.12 is used if current environment lacks rtde_control
+def ensure_python_environment():
+    try:
+        import rtde_control
+        return
+    except ModuleNotFoundError:
+        cand_py312 = r"C:\Users\dhamm\AppData\Local\Programs\Python\Python312\python.exe"
+        if os.path.exists(cand_py312) and cand_py312.lower() != sys.executable.lower():
+            print(f"[Auto-Redirect] Switching to Python 3.12 ({cand_py312})...")
+            sys.exit(subprocess.call([cand_py312] + sys.argv))
+        elif shutil.which("py") and "3.12" not in sys.version:
+            print("[Auto-Redirect] Switching to 'py -3.12'...")
+            sys.exit(subprocess.call([shutil.which("py"), "-3.12"] + sys.argv))
+
+ensure_python_environment()
 
 def main():
     parser = argparse.ArgumentParser(
@@ -47,9 +65,9 @@ def main():
         from test_vr_simulation import run_simulation_tests
         run_simulation_tests()
     else:
-        print("🤖 กำลังเริ่มระบบ Teleoperation เชื่อมต่อหุ่นยนต์ UR3e จริง...")
-        # ส่งต่อไปรัน test_move.py
-        cmd = [sys.executable, "test_move.py"]
+        print(f"🤖 กำลังเริ่มระบบ Teleoperation เชื่อมต่อหุ่นยนต์ UR3e จริง (IP: {args.ip})...")
+        os.environ["ROBOT_IP"] = args.ip
+        cmd = [sys.executable, "test_move.py", args.ip]
         try:
             subprocess.run(cmd)
         except KeyboardInterrupt:
