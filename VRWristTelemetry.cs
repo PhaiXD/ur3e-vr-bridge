@@ -318,7 +318,9 @@ namespace UR3eVR
             bool isConn = (gripperBridge != null && gripperBridge.isConnected);
             if (robotStatusText != null)
             {
-                robotStatusText.text = isConn ? "● UR3e: CONNECTED" : "○ UR3e: DISCONNECTED";
+                bool isPy = (VRPythonBridgeManager.Instance != null && VRPythonBridgeManager.Instance.IsRunning);
+                string pyTag = isPy ? "<color=#00FFAA>[PY:ON]</color>" : "<color=#FF6666>[PY:OFF]</color>";
+                robotStatusText.text = isConn ? $"● UR3e: ON | {pyTag}" : $"○ UR3e: OFF | {pyTag}";
                 robotStatusText.color = isConn ? new Color(0.0f, 1.0f, 0.55f) : new Color(1.0f, 0.35f, 0.35f);
             }
 

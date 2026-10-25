@@ -45,7 +45,7 @@ namespace UR3eVR
 
         [Header("Menu State")]
         public bool isMenuOpen = false;
-        public enum MenuPanel { Main, Camera, Log, Background, Settings, Speed }
+        public enum MenuPanel { Main, Camera, Log, Background, Settings, Speed, Python }
         public MenuPanel currentPanel = MenuPanel.Main;
 
         [Header("Skybox & Environment Options")]
@@ -84,6 +84,7 @@ namespace UR3eVR
         private GameObject panelBg;
         private GameObject panelSettings;
         private GameObject panelSpeed;
+        private GameObject panelPython;
 
         // Main Panel UI
         private Text statusText;
@@ -301,6 +302,9 @@ namespace UR3eVR
                 if (Input.GetKeyDown(KeyCode.Alpha2)) ShowPanel(MenuPanel.Camera);
                 if (Input.GetKeyDown(KeyCode.Alpha3)) ShowPanel(MenuPanel.Log);
                 if (Input.GetKeyDown(KeyCode.Alpha4)) ShowPanel(MenuPanel.Background);
+                if (Input.GetKeyDown(KeyCode.Alpha5)) ShowPanel(MenuPanel.Settings);
+                if (Input.GetKeyDown(KeyCode.Alpha6)) ShowPanel(MenuPanel.Speed);
+                if (Input.GetKeyDown(KeyCode.Alpha7)) ShowPanel(MenuPanel.Python);
                 if (Input.GetKeyDown(KeyCode.Escape)) SetMenuOpen(false);
             }
 
@@ -328,6 +332,17 @@ namespace UR3eVR
             if (isMenuOpen && currentPanel == MenuPanel.Main && statusText != null)
             {
                 UpdateMainStatusText();
+            }
+
+            // Update Python Panel UI periodically
+            if (isMenuOpen && currentPanel == MenuPanel.Python)
+            {
+                pyRefreshTimer += Time.deltaTime;
+                if (pyRefreshTimer >= 0.25f)
+                {
+                    pyRefreshTimer = 0f;
+                    RefreshPythonUI();
+                }
             }
 
             // Single Pass Instanced: Continuously guarantee CenterEyeCamera on World Space Canvas
@@ -426,6 +441,11 @@ namespace UR3eVR
                 panelSpeed.SetActive(panel == MenuPanel.Speed);
                 if (panel == MenuPanel.Speed) RefreshSpeedUI();
             }
+            if (panelPython != null)
+            {
+                panelPython.SetActive(panel == MenuPanel.Python);
+                if (panel == MenuPanel.Python) RefreshPythonUI();
+            }
 
             if (panel == MenuPanel.Camera)
             {
@@ -434,6 +454,10 @@ namespace UR3eVR
             else if (panel == MenuPanel.Log)
             {
                 RefreshLogText();
+            }
+            else if (panel == MenuPanel.Python)
+            {
+                RefreshPythonUI();
             }
         }
 
@@ -480,6 +504,11 @@ namespace UR3eVR
         public void ActionOpenSpeed()
         {
             ShowPanel(MenuPanel.Speed);
+        }
+
+        public void ActionOpenPython()
+        {
+            ShowPanel(MenuPanel.Python);
         }
 
         public void ActionBackground()
@@ -1000,7 +1029,11 @@ namespace UR3eVR
             panelSpeed = CreatePanel(canvasRT, "Panel_Speed");
             BuildSpeedPanelContent(panelSpeed.transform);
 
-            // 7. Meta Horizon OS Bottom Pill Grab Handle Bar
+            // 7. Build Python Bridge Control Panel
+            panelPython = CreatePanel(canvasRT, "Panel_Python");
+            BuildPythonPanelContent(panelPython.transform);
+
+            // 8. Meta Horizon OS Bottom Pill Grab Handle Bar
             GameObject grabBar = new GameObject("GrabHandleBar");
             grabBar.transform.SetParent(canvasObj.transform, false);
             RectTransform grabRT = grabBar.AddComponent<RectTransform>();
@@ -1112,44 +1145,49 @@ namespace UR3eVR
         {
             CreateHeader(p, "UR3e Quick Menu", () => ActionCloseMenu());
 
-            // 5 Main Buttons Container (Item 4)
+            // 6 Main Buttons Container (Item 4)
             GameObject btnGrid = new GameObject("ButtonGrid");
             btnGrid.transform.SetParent(p, false);
             RectTransform gridRT = btnGrid.AddComponent<RectTransform>();
-            gridRT.anchorMin = new Vector2(0.08f, 0.16f);
-            gridRT.anchorMax = new Vector2(0.92f, 0.84f);
+            gridRT.anchorMin = new Vector2(0.08f, 0.14f);
+            gridRT.anchorMax = new Vector2(0.92f, 0.86f);
             gridRT.offsetMin = Vector2.zero;
             gridRT.offsetMax = Vector2.zero;
 
             var vlg = btnGrid.AddComponent<VerticalLayoutGroup>();
-            vlg.spacing = 10;
+            vlg.spacing = 6;
             vlg.childForceExpandWidth = true;
             vlg.childForceExpandHeight = true;
 
             // 1. Set Origin
-            btnMainSetOrigin = CreateSimpleButton(btnGrid.transform, "Set Origin (Calibrate to Hand Pose)", 46,
+            btnMainSetOrigin = CreateSimpleButton(btnGrid.transform, "Set Origin (Calibrate to Hand Pose)", 42,
                 isDarkMode ? new Color(0.0f, 0.38f, 0.55f, 0.95f) : new Color(0.80f, 0.90f, 0.98f, 0.98f),
                 isDarkMode ? Color.white : new Color(0.04f, 0.24f, 0.44f), ActionSetOrigin);
 
             // 2. Add Cam (Item 4d: renamed from Open New Cam)
-            btnMainAddCam = CreateSimpleButton(btnGrid.transform, "Add Cam (Webcam Selector)", 46,
+            btnMainAddCam = CreateSimpleButton(btnGrid.transform, "Add Cam (Webcam Selector)", 42,
                 isDarkMode ? new Color(0.12f, 0.22f, 0.40f, 0.95f) : new Color(0.85f, 0.88f, 0.98f, 0.98f),
                 isDarkMode ? Color.white : new Color(0.10f, 0.16f, 0.46f), ActionOpenNewCam);
 
             // 3. Open Log
-            btnMainOpenLog = CreateSimpleButton(btnGrid.transform, "Open Log (UR3e & Python Monitor)", 46,
+            btnMainOpenLog = CreateSimpleButton(btnGrid.transform, "Open Log (UR3e & Python Monitor)", 42,
                 isDarkMode ? new Color(0.24f, 0.18f, 0.38f, 0.95f) : new Color(0.92f, 0.86f, 0.98f, 0.98f),
                 isDarkMode ? Color.white : new Color(0.26f, 0.10f, 0.46f), ActionOpenLog);
 
             // 4. Settings (Item 4b: Controls & Appearance)
-            btnMainSettings = CreateSimpleButton(btnGrid.transform, "Settings (Controls & Appearance)", 46,
+            btnMainSettings = CreateSimpleButton(btnGrid.transform, "Settings (Controls & Appearance)", 42,
                 isDarkMode ? new Color(0.14f, 0.26f, 0.32f, 0.95f) : new Color(0.84f, 0.91f, 0.94f, 0.98f),
                 isDarkMode ? Color.white : new Color(0.08f, 0.24f, 0.32f), ActionOpenSettings);
 
             // 5. Speed (Item 4c: Velocity Control & Snap Presets)
-            btnMainSpeed = CreateSimpleButton(btnGrid.transform, "Speed (Robot Motion Velocity)", 46,
+            btnMainSpeed = CreateSimpleButton(btnGrid.transform, "Speed (Robot Motion Velocity)", 42,
                 isDarkMode ? new Color(0.10f, 0.34f, 0.28f, 0.95f) : new Color(0.82f, 0.94f, 0.90f, 0.98f),
                 isDarkMode ? Color.white : new Color(0.06f, 0.30f, 0.22f), ActionOpenSpeed);
+
+            // 6. Python Bridge (Process & In-VR Control)
+            btnMainPython = CreateSimpleButton(btnGrid.transform, "Python Bridge (Process & In-VR Control)", 42,
+                isDarkMode ? new Color(0.18f, 0.32f, 0.16f, 0.95f) : new Color(0.84f, 0.95f, 0.84f, 0.98f),
+                isDarkMode ? Color.white : new Color(0.06f, 0.30f, 0.10f), ActionOpenPython);
 
             // Status Bar at Bottom
             GameObject statObj = new GameObject("StatusBar");
@@ -1836,6 +1874,18 @@ namespace UR3eVR
         private GameObject btnMainOpenLog;
         private GameObject btnMainSettings;
         private GameObject btnMainSpeed;
+        private GameObject btnMainPython;
+
+        // Python Bridge Panel Variables
+        private Text pyStatusBadgeText;
+        private Text pyDetailsText;
+        private Text pyConsolePreviewText;
+        private Image pyStatusBadgeImg;
+        private GameObject pyStatusCardObj;
+        private GameObject pyActionsCardObj;
+        private GameObject pyRobotDirectCardObj;
+        private GameObject pyConsoleCardObj;
+        private float pyRefreshTimer = 0f;
 
         private readonly Dictionary<VRAction, Text> keybindBtnTexts = new Dictionary<VRAction, Text>();
         private readonly Dictionary<VRAction, Image> keybindBtnImages = new Dictionary<VRAction, Image>();
@@ -2086,7 +2136,7 @@ namespace UR3eVR
         public void ApplyTheme(bool dark)
         {
             isDarkMode = dark;
-            GameObject[] panels = { panelMain, panelCamera, panelLog, panelBg, panelSettings, panelSpeed };
+            GameObject[] panels = { panelMain, panelCamera, panelLog, panelBg, panelSettings, panelSpeed, panelPython };
             foreach (var p in panels)
             {
                 if (p == null) continue;
@@ -2180,6 +2230,9 @@ namespace UR3eVR
             UpdateMainButtonTheme(btnMainSpeed,
                 dark ? new Color(0.10f, 0.34f, 0.28f, 0.95f) : new Color(0.82f, 0.94f, 0.90f, 0.98f),
                 dark ? Color.white : new Color(0.06f, 0.30f, 0.22f));
+            UpdateMainButtonTheme(btnMainPython,
+                dark ? new Color(0.18f, 0.32f, 0.16f, 0.95f) : new Color(0.84f, 0.95f, 0.84f, 0.98f),
+                dark ? Color.white : new Color(0.06f, 0.30f, 0.10f));
 
             if (colCtrlObj != null)
             {
@@ -2397,6 +2450,25 @@ namespace UR3eVR
             UpdateSpeedVisuals(currentSpeedPercent);
             RefreshBgPageButtons();
             RefreshLogText();
+
+            if (pyStatusCardObj != null)
+            {
+                var img = pyStatusCardObj.GetComponent<Image>();
+                if (img != null) img.color = dark ? new Color(0.08f, 0.12f, 0.18f, 0.95f) : new Color(0.88f, 0.92f, 0.96f, 0.98f);
+            }
+            if (pyRobotDirectCardObj != null)
+            {
+                var img = pyRobotDirectCardObj.GetComponent<Image>();
+                if (img != null) img.color = dark ? new Color(0.07f, 0.10f, 0.15f, 0.92f) : new Color(0.90f, 0.93f, 0.97f, 0.95f);
+            }
+            if (pyConsoleCardObj != null)
+            {
+                var img = pyConsoleCardObj.GetComponent<Image>();
+                if (img != null) img.color = dark ? new Color(0.04f, 0.06f, 0.09f, 0.98f) : new Color(0.95f, 0.96f, 0.98f, 0.98f);
+                if (pyConsolePreviewText != null)
+                    pyConsolePreviewText.color = dark ? new Color(0.40f, 0.90f, 0.70f) : new Color(0.05f, 0.40f, 0.25f);
+            }
+            RefreshPythonUI();
 
             if (VRWristTelemetry.Instance != null) VRWristTelemetry.Instance.SetTheme(dark);
             if (VRCameraWindow.Instance != null) VRCameraWindow.Instance.SetTheme(dark);
@@ -2690,6 +2762,350 @@ namespace UR3eVR
             txt.raycastTarget = false;
             return txt;
         }
+
+        #region Python Bridge Panel Content & Actions
+        private void BuildPythonPanelContent(Transform p)
+        {
+            CreateHeader(p, "Python Teleop Bridge", () => ActionCloseMenu(), () => ActionBackToMain());
+
+            // Card 1: Process Status & Mode
+            pyStatusCardObj = new GameObject("PyStatusCard");
+            pyStatusCardObj.transform.SetParent(p, false);
+            RectTransform scRT = pyStatusCardObj.AddComponent<RectTransform>();
+            scRT.anchorMin = new Vector2(0.06f, 0.70f);
+            scRT.anchorMax = new Vector2(0.94f, 0.86f);
+            scRT.offsetMin = Vector2.zero;
+            scRT.offsetMax = Vector2.zero;
+
+            pyStatusBadgeImg = pyStatusCardObj.AddComponent<Image>();
+            if (roundedRectSprite != null) { pyStatusBadgeImg.sprite = roundedRectSprite; pyStatusBadgeImg.type = Image.Type.Sliced; }
+            pyStatusBadgeImg.material = null;
+            pyStatusBadgeImg.color = isDarkMode ? new Color(0.08f, 0.12f, 0.18f, 0.95f) : new Color(0.88f, 0.92f, 0.96f, 0.98f);
+
+            Outline scOl = pyStatusCardObj.AddComponent<Outline>();
+            scOl.effectColor = new Color(0.0f, 0.85f, 1.0f, 0.35f);
+            scOl.effectDistance = new Vector2(1f, -1f);
+
+            GameObject stBadgeObj = new GameObject("BadgeText");
+            stBadgeObj.transform.SetParent(pyStatusCardObj.transform, false);
+            RectTransform stRT = stBadgeObj.AddComponent<RectTransform>();
+            stRT.anchorMin = new Vector2(0.04f, 0.50f);
+            stRT.anchorMax = new Vector2(0.96f, 0.95f);
+            stRT.offsetMin = Vector2.zero;
+            stRT.offsetMax = Vector2.zero;
+            pyStatusBadgeText = stBadgeObj.AddComponent<Text>();
+            pyStatusBadgeText.font = uiFont;
+            pyStatusBadgeText.fontSize = 17;
+            pyStatusBadgeText.fontStyle = FontStyle.Bold;
+            pyStatusBadgeText.alignment = TextAnchor.MiddleLeft;
+            pyStatusBadgeText.color = Color.white;
+            pyStatusBadgeText.text = "● STATUS: CHECKING...";
+
+            GameObject dtObj = new GameObject("DetailsText");
+            dtObj.transform.SetParent(pyStatusCardObj.transform, false);
+            RectTransform dtRT = dtObj.AddComponent<RectTransform>();
+            dtRT.anchorMin = new Vector2(0.04f, 0.08f);
+            dtRT.anchorMax = new Vector2(0.96f, 0.50f);
+            dtRT.offsetMin = Vector2.zero;
+            dtRT.offsetMax = Vector2.zero;
+            pyDetailsText = dtObj.AddComponent<Text>();
+            pyDetailsText.font = uiFont;
+            pyDetailsText.fontSize = 13;
+            pyDetailsText.alignment = TextAnchor.MiddleLeft;
+            pyDetailsText.color = new Color(0.75f, 0.85f, 0.95f, 0.9f);
+            pyDetailsText.text = "Target: 192.168.1.20:5005 | Script: main.py";
+
+            // Card 2: Process Control Buttons (Launch / Stop / Restart)
+            pyActionsCardObj = new GameObject("PyActionsCard");
+            pyActionsCardObj.transform.SetParent(p, false);
+            RectTransform actRT = pyActionsCardObj.AddComponent<RectTransform>();
+            actRT.anchorMin = new Vector2(0.06f, 0.54f);
+            actRT.anchorMax = new Vector2(0.94f, 0.68f);
+            actRT.offsetMin = Vector2.zero;
+            actRT.offsetMax = Vector2.zero;
+
+            var hlgAct = pyActionsCardObj.AddComponent<HorizontalLayoutGroup>();
+            hlgAct.spacing = 8;
+            hlgAct.childForceExpandWidth = true;
+            hlgAct.childForceExpandHeight = true;
+
+            CreateSimpleButton(pyActionsCardObj.transform, "▶ Start Real Robot", 42,
+                new Color(0.08f, 0.38f, 0.22f, 0.95f), Color.white, ActionStartRealRobot);
+            CreateSimpleButton(pyActionsCardObj.transform, "🧪 Start Simulation", 42,
+                new Color(0.12f, 0.30f, 0.44f, 0.95f), Color.white, ActionStartSimulation);
+            CreateSimpleButton(pyActionsCardObj.transform, "⏹ Stop Bridge", 42,
+                new Color(0.50f, 0.15f, 0.18f, 0.95f), Color.white, ActionStopPython);
+            CreateSimpleButton(pyActionsCardObj.transform, "🔄 Restart", 42,
+                new Color(0.32f, 0.18f, 0.40f, 0.95f), Color.white, ActionRestartPython);
+
+            // Card 3: In-VR Direct Robot Controls (No Keyboard Needed)
+            pyRobotDirectCardObj = new GameObject("PyRobotDirectCard");
+            pyRobotDirectCardObj.transform.SetParent(p, false);
+            RectTransform rdcRT = pyRobotDirectCardObj.AddComponent<RectTransform>();
+            rdcRT.anchorMin = new Vector2(0.06f, 0.27f);
+            rdcRT.anchorMax = new Vector2(0.94f, 0.52f);
+            rdcRT.offsetMin = Vector2.zero;
+            rdcRT.offsetMax = Vector2.zero;
+
+            Image rdcImg = pyRobotDirectCardObj.AddComponent<Image>();
+            if (roundedRectSprite != null) { rdcImg.sprite = roundedRectSprite; rdcImg.type = Image.Type.Sliced; }
+            rdcImg.material = null;
+            rdcImg.color = isDarkMode ? new Color(0.07f, 0.10f, 0.15f, 0.92f) : new Color(0.90f, 0.93f, 0.97f, 0.95f);
+
+            Outline rdcOl = pyRobotDirectCardObj.AddComponent<Outline>();
+            rdcOl.effectColor = new Color(0.0f, 0.70f, 0.90f, 0.30f);
+            rdcOl.effectDistance = new Vector2(1f, -1f);
+
+            // Label
+            GameObject rdcLblObj = new GameObject("DirectControlsLabel");
+            rdcLblObj.transform.SetParent(pyRobotDirectCardObj.transform, false);
+            RectTransform lblRT = rdcLblObj.AddComponent<RectTransform>();
+            lblRT.anchorMin = new Vector2(0.03f, 0.75f);
+            lblRT.anchorMax = new Vector2(0.97f, 0.97f);
+            lblRT.offsetMin = Vector2.zero;
+            lblRT.offsetMax = Vector2.zero;
+            Text rdcLbl = rdcLblObj.AddComponent<Text>();
+            rdcLbl.font = uiFont;
+            rdcLbl.fontSize = 12;
+            rdcLbl.fontStyle = FontStyle.Bold;
+            rdcLbl.alignment = TextAnchor.MiddleLeft;
+            rdcLbl.color = isDarkMode ? new Color(0.50f, 0.85f, 1.0f) : new Color(0.10f, 0.30f, 0.55f);
+            rdcLbl.text = "DIRECT ROBOT ACTIONS (IN-VR QUICK TRIGGERS)";
+
+            // Row 1
+            GameObject row1 = new GameObject("DirectRow1");
+            row1.transform.SetParent(pyRobotDirectCardObj.transform, false);
+            RectTransform r1RT = row1.AddComponent<RectTransform>();
+            r1RT.anchorMin = new Vector2(0.02f, 0.38f);
+            r1RT.anchorMax = new Vector2(0.98f, 0.72f);
+            r1RT.offsetMin = Vector2.zero;
+            r1RT.offsetMax = Vector2.zero;
+            var hlgR1 = row1.AddComponent<HorizontalLayoutGroup>();
+            hlgR1.spacing = 6;
+            hlgR1.childForceExpandWidth = true;
+            hlgR1.childForceExpandHeight = true;
+
+            CreateSimpleButton(row1.transform, "⚖ Zero Fz (Tare)", 32,
+                new Color(0.18f, 0.28f, 0.38f, 0.95f), Color.white, ActionDirectTare);
+            CreateSimpleButton(row1.transform, "🏠 Safe Home Pose", 32,
+                new Color(0.15f, 0.32f, 0.25f, 0.95f), Color.white, ActionDirectHome);
+            CreateSimpleButton(row1.transform, "🧪 Shake Tube 3x", 32,
+                new Color(0.35f, 0.22f, 0.38f, 0.95f), Color.white, ActionDirectShake);
+
+            // Row 2
+            GameObject row2 = new GameObject("DirectRow2");
+            row2.transform.SetParent(pyRobotDirectCardObj.transform, false);
+            RectTransform r2RT = row2.AddComponent<RectTransform>();
+            r2RT.anchorMin = new Vector2(0.02f, 0.04f);
+            r2RT.anchorMax = new Vector2(0.98f, 0.36f);
+            r2RT.offsetMin = Vector2.zero;
+            r2RT.offsetMax = Vector2.zero;
+            var hlgR2 = row2.AddComponent<HorizontalLayoutGroup>();
+            hlgR2.spacing = 6;
+            hlgR2.childForceExpandWidth = true;
+            hlgR2.childForceExpandHeight = true;
+
+            CreateSimpleButton(row2.transform, "⏸ Pause / Resume Teleop", 32,
+                new Color(0.36f, 0.28f, 0.12f, 0.95f), Color.white, ActionDirectTogglePause);
+            CreateSimpleButton(row2.transform, "🔒 Toggle Gripper Lock", 32,
+                new Color(0.24f, 0.20f, 0.34f, 0.95f), Color.white, ActionDirectToggleLock);
+            CreateSimpleButton(row2.transform, "⚡ Speed Velocity Panel", 32,
+                new Color(0.14f, 0.32f, 0.30f, 0.95f), Color.white, ActionOpenSpeed);
+
+            // Card 4: Live Python Output Stream
+            pyConsoleCardObj = new GameObject("PyConsoleCard");
+            pyConsoleCardObj.transform.SetParent(p, false);
+            RectTransform conRT = pyConsoleCardObj.AddComponent<RectTransform>();
+            conRT.anchorMin = new Vector2(0.06f, 0.03f);
+            conRT.anchorMax = new Vector2(0.94f, 0.25f);
+            conRT.offsetMin = Vector2.zero;
+            conRT.offsetMax = Vector2.zero;
+
+            Image conImg = pyConsoleCardObj.AddComponent<Image>();
+            if (roundedRectSprite != null) { conImg.sprite = roundedRectSprite; conImg.type = Image.Type.Sliced; }
+            conImg.material = null;
+            conImg.color = isDarkMode ? new Color(0.04f, 0.06f, 0.09f, 0.98f) : new Color(0.95f, 0.96f, 0.98f, 0.98f);
+
+            Outline conOl = pyConsoleCardObj.AddComponent<Outline>();
+            conOl.effectColor = new Color(0.0f, 0.60f, 0.85f, 0.25f);
+            conOl.effectDistance = new Vector2(1f, -1f);
+
+            GameObject cpTextObj = new GameObject("ConsolePreviewText");
+            cpTextObj.transform.SetParent(pyConsoleCardObj.transform, false);
+            RectTransform cptRT = cpTextObj.AddComponent<RectTransform>();
+            cptRT.anchorMin = new Vector2(0.03f, 0.05f);
+            cptRT.anchorMax = new Vector2(0.97f, 0.95f);
+            cptRT.offsetMin = Vector2.zero;
+            cptRT.offsetMax = Vector2.zero;
+            pyConsolePreviewText = cpTextObj.AddComponent<Text>();
+            pyConsolePreviewText.font = uiFont;
+            pyConsolePreviewText.fontSize = 12;
+            pyConsolePreviewText.alignment = TextAnchor.UpperLeft;
+            pyConsolePreviewText.color = isDarkMode ? new Color(0.40f, 0.90f, 0.70f) : new Color(0.05f, 0.40f, 0.25f);
+            pyConsolePreviewText.text = "[CONSOLE] Ready. Press 'Start Real Robot' or 'Start Simulation'.";
+
+            RefreshPythonUI();
+        }
+
+        public void RefreshPythonUI()
+        {
+            var mgr = VRPythonBridgeManager.Instance;
+            bool isRunning = mgr != null && mgr.IsRunning;
+            int pid = mgr != null ? mgr.currentProcessId : 0;
+            string modeStr = mgr != null ? mgr.currentMode.ToString() : "Stopped";
+            string ip = mgr != null ? mgr.targetRobotIp : "192.168.1.20";
+
+            if (pyStatusBadgeText != null)
+            {
+                if (isRunning)
+                {
+                    string colorHex = (mgr.currentMode == VRPythonBridgeManager.BridgeMode.RealRobot) ? "#00FF88" : "#00D4FF";
+                    pyStatusBadgeText.text = $"<color={colorHex}>● RUNNING: {modeStr.ToUpper()}</color> (PID: {pid})";
+                }
+                else
+                {
+                    pyStatusBadgeText.text = "<color=#FF6666>○ STOPPED (Python Idle)</color>";
+                }
+            }
+
+            if (pyDetailsText != null)
+            {
+                string pyExe = (mgr != null && !string.IsNullOrEmpty(mgr.pythonExePath)) ? Path.GetFileName(mgr.pythonExePath) : "python.exe";
+                pyDetailsText.text = $"Target Robot: <b>{ip}:5005</b> | Executable: <b>{pyExe}</b> | Mode: <b>{modeStr}</b>";
+            }
+
+            if (pyConsolePreviewText != null && mgr != null)
+            {
+                var logs = mgr.RecentLogs;
+                if (logs != null && logs.Count > 0)
+                {
+                    int start = Mathf.Max(0, logs.Count - 4);
+                    System.Text.StringBuilder sb = new System.Text.StringBuilder();
+                    for (int i = start; i < logs.Count; i++)
+                    {
+                        sb.AppendLine(logs[i]);
+                    }
+                    pyConsolePreviewText.text = sb.ToString().TrimEnd();
+                }
+                else
+                {
+                    pyConsolePreviewText.text = isRunning ? $"[PID {pid}] Teleop bridge streaming on UDP 5005..." : "[CONSOLE] Bridge process is currently stopped.";
+                }
+            }
+        }
+
+        public void ActionStartRealRobot()
+        {
+            if (VRPythonBridgeManager.Instance == null)
+            {
+                var go = new GameObject("VRPythonBridgeManager");
+                go.AddComponent<VRPythonBridgeManager>();
+            }
+            VRPythonBridgeManager.Instance.StartRealRobot();
+            ShowToast("▶ Starting Python Real Robot Bridge...");
+            HapticPulse(0.5f, 0.15f);
+            RefreshPythonUI();
+        }
+
+        public void ActionStartSimulation()
+        {
+            if (VRPythonBridgeManager.Instance == null)
+            {
+                var go = new GameObject("VRPythonBridgeManager");
+                go.AddComponent<VRPythonBridgeManager>();
+            }
+            VRPythonBridgeManager.Instance.StartSimulation();
+            ShowToast("🧪 Starting Python VR Simulation...");
+            HapticPulse(0.5f, 0.15f);
+            RefreshPythonUI();
+        }
+
+        public void ActionStopPython()
+        {
+            if (VRPythonBridgeManager.Instance != null)
+            {
+                VRPythonBridgeManager.Instance.StopBridge();
+                ShowToast("⏹ Stopped Python Bridge");
+                HapticPulse(0.3f, 0.1f);
+                RefreshPythonUI();
+            }
+        }
+
+        public void ActionRestartPython()
+        {
+            if (VRPythonBridgeManager.Instance != null)
+            {
+                VRPythonBridgeManager.Instance.RestartBridge();
+                ShowToast("🔄 Restarting Python Bridge...");
+                HapticPulse(0.5f, 0.15f);
+                RefreshPythonUI();
+            }
+        }
+
+        public void ActionDirectTare()
+        {
+            if (gripperBridge == null) gripperBridge = FindAnyObjectByType<GripperBridge>();
+            if (gripperBridge != null)
+            {
+                gripperBridge.RequestTare();
+                ShowToast("⚖ Zeroed Fz Force Sensor (Tare)");
+                HapticPulse(0.6f, 0.15f);
+                AddLog("ACTION", "Direct Tare triggered via VR Python Bridge Panel.");
+            }
+        }
+
+        public void ActionDirectHome()
+        {
+            if (gripperBridge == null) gripperBridge = FindAnyObjectByType<GripperBridge>();
+            if (gripperBridge != null)
+            {
+                gripperBridge.RequestHome();
+                ShowToast("🏠 Safe Home Requested for UR3e");
+                HapticPulse(0.7f, 0.2f);
+                AddLog("ACTION", "Safe Home commanded via VR Python Bridge Panel.");
+            }
+        }
+
+        public void ActionDirectShake()
+        {
+            if (gripperBridge == null) gripperBridge = FindAnyObjectByType<GripperBridge>();
+            if (gripperBridge != null)
+            {
+                gripperBridge.RequestShake();
+                ShowToast("🧪 Tube Shaking Routine Started (3x)");
+                HapticPulse(0.8f, 0.25f);
+                AddLog("ACTION", "Direct Shake tube 3x commanded via VR Python Bridge Panel.");
+            }
+        }
+
+        private bool directPauseState = false;
+        public void ActionDirectTogglePause()
+        {
+            if (gripperBridge == null) gripperBridge = FindAnyObjectByType<GripperBridge>();
+            if (gripperBridge != null)
+            {
+                directPauseState = !directPauseState;
+                gripperBridge.RequestPause(directPauseState);
+                string msg = directPauseState ? "⏸ Robot Teleoperation PAUSED" : "▶ Robot Teleoperation RESUMED";
+                ShowToast(msg);
+                HapticPulse(0.5f, 0.15f);
+                AddLog("ACTION", msg);
+            }
+        }
+
+        public void ActionDirectToggleLock()
+        {
+            if (gripperBridge == null) gripperBridge = FindAnyObjectByType<GripperBridge>();
+            if (gripperBridge != null)
+            {
+                bool locked = gripperBridge.ToggleGripperLock();
+                string msg = locked ? "🔒 Gripper LOCKED" : "🔓 Gripper UNLOCKED";
+                ShowToast(msg);
+                HapticPulse(0.5f, 0.15f);
+                AddLog("ACTION", msg);
+            }
+        }
+        #endregion
 
         private Text CreateTextItem(Transform parent, string content, int fontSize, Color col)
         {
