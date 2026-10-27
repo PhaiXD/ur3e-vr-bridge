@@ -2,12 +2,12 @@
 """
 UR3e VR Bridge - Main Entry Point
 =================================
-ระบบเชื่อมต่อ Teleoperation ระหว่าง Meta Quest VR และหุ่นยนต์ UR3e Real-Time
+Teleoperation bridge between Meta Quest VR and UR3e robot in real-time.
 
-การใช้งาน:
-    python main.py              # เริ่มต้นระบบ Teleoperation ควบคุมหุ่นยนต์จริง (UR3e)
-    python main.py --sim        # เริ่มต้นโหมดจำลอง (Offline VR Simulation Test)
-    python main.py --help       # แสดงคำแนะนำการใช้งาน
+Usage:
+    python main.py              # Start real robot teleoperation (UR3e)
+    python main.py --sim        # Start offline VR simulation test
+    python main.py --help       # Show usage help
 """
 
 import sys
@@ -43,35 +43,35 @@ def main():
         description="UR3e VR Bridge - Teleoperation Controller & Simulation",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-ตัวอย่างคำสั่ง:
-  python main.py             รันระบบเชื่อมต่อหุ่นยนต์ UR3e จริงผ่าน RTDE และ VR
-  python main.py --sim       รันระบบทดสอบจำลอง (Simulation) 10 ขั้นตอนโดยไม่ต้องต่อหุ่นยนต์จริง
-  python main.py --ip <IP>   ระบุ IP Address ของหุ่นยนต์ UR3e (ค่าเริ่มต้น: 192.168.1.20)
+Examples:
+  python main.py             Run real UR3e teleoperation via RTDE and VR
+  python main.py --sim       Run simulation test (10 steps, no real robot needed)
+  python main.py --ip <IP>   Specify UR3e robot IP address (default: 192.168.1.20)
         """
     )
     parser.add_argument(
         "--sim", action="store_true",
-        help="รันโหมดจำลอง VR Simulation (Offline testing)"
+        help="Run VR simulation mode (offline testing)"
     )
     parser.add_argument(
         "--ip", type=str, default="192.168.1.20",
-        help="IP Address ของหุ่นยนต์ UR3e (Default: 192.168.1.20)"
+        help="UR3e robot IP address (default: 192.168.1.20)"
     )
 
     args = parser.parse_args()
 
     if args.sim:
-        print("🚀 กำลังเริ่มโหมดจำลอง (Simulation Mode)...")
+        print("🚀 Starting simulation mode...")
         from test_vr_simulation import run_simulation_tests
         run_simulation_tests()
     else:
-        print(f"🤖 กำลังเริ่มระบบ Teleoperation เชื่อมต่อหุ่นยนต์ UR3e จริง (IP: {args.ip})...")
+        print(f"🤖 Starting UR3e teleoperation (IP: {args.ip})...")
         os.environ["ROBOT_IP"] = args.ip
         cmd = [sys.executable, "test_move.py", args.ip]
         try:
             subprocess.run(cmd)
         except KeyboardInterrupt:
-            print("\n🛑 หยุดการทำงานโดยผู้ใช้")
+            print("\n🛑 Stopped by user")
 
 if __name__ == "__main__":
     main()

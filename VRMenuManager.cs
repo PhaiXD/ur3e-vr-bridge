@@ -29,7 +29,7 @@ namespace UR3eVR
         public static VRMenuManager Instance { get; private set; }
 
         [Header("Menu Key & Controller Bindings")]
-        [Tooltip("ปุ่ม Menu บนรีโมทซ้าย (ขีด 3 ขีดบน LTouch)")]
+        [Tooltip("Menu button on left controller (3-line button on LTouch)")]
         public OVRInput.Button menuButton = OVRInput.Button.Start;
         public OVRInput.RawButton rawMenuButton = OVRInput.RawButton.Start;
         public KeyCode keyboardMenuKey = KeyCode.M;

@@ -4,7 +4,7 @@ using UnityEngine;
 namespace UR3eVR
 {
     /// <summary>
-    /// LowPassFilter: ตัวกรองความถี่ต่ำอันดับ 1 (First-order Low-Pass Filter)
+    /// First-order Low-Pass Filter.
     /// </summary>
     public class LowPassFilter
     {
@@ -54,9 +54,8 @@ namespace UR3eVR
     }
 
     /// <summary>
-    /// OneEuroFilter: ตัวกรองสัญญาณแบบปรับความถี่ตัดตามความเร็ว (1€ Filter - CHI 2012)
-    /// - เมื่อมือนิ่ง/เคลื่อนที่ช้า: กรองสัญญาณรบกวน (Jitter & Tremor) ให้หยุดนิ่งสนิท
-    /// - เมื่อมือขยับ/หมุนเร็ว: ปรับเพิ่ม Cutoff Frequency ทันที ทำให้ตอบสนองฉับไว ไร้ Lag
+    /// OneEuroFilter: Speed-adaptive cutoff frequency filter (1€ Filter - CHI 2012).
+    /// Filters jitter at low speed; minimizes latency during fast motions.
     /// </summary>
     public class OneEuroFilter
     {
@@ -104,7 +103,7 @@ namespace UR3eVR
     }
 
     /// <summary>
-    /// OneEuroFilterVector3: ตัวกรอง One Euro Filter สำหรับพิกัดตำแหน่ง 3 มิติ (X, Y, Z)
+    /// OneEuroFilterVector3: 1€ Filter for 3D Vector3 positions.
     /// </summary>
     public class OneEuroFilterVector3
     {
@@ -150,9 +149,8 @@ namespace UR3eVR
     }
 
     /// <summary>
-    /// OneEuroFilterQuaternion: ตัวกรอง One Euro Filter สำหรับการหมุนข้อมือ 3 มิติ (Quaternion SO(3))
-    /// - ใช้ความเร็วเชิงมุม (Angular Velocity) ปรับ Cutoff Frequency อัตโนมัติ
-    /// - ผสานด้วย Slerp ไร้ Gimbal Lock และป้องกันปัญหา Antipodal Flip
+    /// OneEuroFilterQuaternion: 1€ Filter for 3D rotations (Quaternion SO(3)).
+    /// Uses angular velocity for adaptive cutoff and Slerp interpolation.
     /// </summary>
     public class OneEuroFilterQuaternion
     {
@@ -207,25 +205,25 @@ namespace UR3eVR
             lastTime = timestamp;
             float rate = 1.0f / dt;
 
-            // ป้องกัน Antipodal Flip: ถ้า dot < 0 ให้กลับเครื่องหมาย q เพื่อให้หมุนผ่านทางที่สั้นที่สุดเสมอ
+            // Antipodal flip protection: shortest rotation path
             if (Quaternion.Dot(lastFilteredQ, q) < 0.0f)
             {
                 q = new Quaternion(-q.x, -q.y, -q.z, -q.w);
             }
 
-            // คำนวณระยะการหมุนเป็นเรเดียน และหาความเร็วเชิงมุม (rad/s)
+            // Angular distance and velocity (rad/s)
             float angleRad = Quaternion.Angle(lastFilteredQ, q) * Mathf.Deg2Rad;
             float omega = angleRad * rate;
 
-            // กรองความเร็วเชิงมุมผ่าน Low-pass dCutoff
+            // Filter angular velocity
             float alphaD = Alpha(rate, dCutoff);
             float filteredOmega = dOmegaFilter.FilterWithAlpha(omega, alphaD);
 
-            // คำนวณ Dynamic Cutoff Frequency สำหรับการหมุน
+            // Dynamic cutoff frequency
             float cutoff = minCutoff + beta * filteredOmega;
             float alpha = Alpha(rate, cutoff);
 
-            // หมุนเข้าหาเป้าหมายด้วย Slerp แบบไดนามิก
+            // Slerp to target
             lastFilteredQ = Quaternion.Slerp(lastFilteredQ, q, alpha);
             return lastFilteredQ;
         }

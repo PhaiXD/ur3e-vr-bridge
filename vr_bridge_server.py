@@ -3,7 +3,7 @@ import threading
 import time
 import sys
 
-# ตั้งค่า stdout utf-8
+# Force UTF-8 stdout
 try:
     sys.stdout.reconfigure(encoding="utf-8")
 except Exception:
@@ -15,12 +15,11 @@ DEFAULT_PORT = 5555
 
 class VRBridgeServer:
     """
-    TCP Server รับคำสั่งจาก Unity Meta Quest Hand Tracking
+    TCP Server for Unity Meta Quest Hand Tracking commands.
     - Port 5555
-    - รับคำสั่ง: 'GRIP <pos>\n' (0 = เปิดสุด, 255 = ปิดสุด)
-    - รับคำสั่ง: 'GRIP <pos>\n' (0 = เปิดสุด, 255 = ปิดสุด)
-    - รับคำสั่ง: 'MOVE <vx> <vy> <vz> [wx] [wy] [wz]\n' (ความเร็ว 6-DOF จากมือ VR, หน่วย m/s และ rad/s)
-    - ส่งสถานะกลับ: 'STATUS <pos> <force_n>\n'
+    - Receives: 'GRIP <pos>\n' (0 = fully open, 255 = fully closed)
+    - Receives: 'MOVE <vx> <vy> <vz> [wx] [wy] [wz]\n' (6-DOF velocity from VR hand, m/s & rad/s)
+    - Sends:    'STATUS <pos> <force_n>\n'
     """
     def __init__(self, host=DEFAULT_HOST, port=DEFAULT_PORT, on_grip_callback=None, on_move_callback=None, on_tare_callback=None, on_pose_callback=None, on_home_callback=None, on_shake_callback=None, on_speed_callback=None):
         self.host = host
@@ -39,23 +38,23 @@ class VRBridgeServer:
         self.thread = None
         self.latest_pos = 0
         self.latest_force = 0.0
-        self.latest_vel = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # vx, vy, vz, wx, wy, wz จาก VR
-        self.latest_target_pose = None                     # [x, y, z, rx, ry, rz] Target Pose จาก VR
+        self.latest_vel = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # vx, vy, vz, wx, wy, wz from VR
+        self.latest_target_pose = None                     # [x, y, z, rx, ry, rz] target pose from VR
         self.is_teleop_paused = False                      # Pause teleoperation freeze state
         self.on_pause_callback = None
         self.client_address = None
 
     def start(self):
-        """ เริ่ม TCP Server ใน Background Thread """
+        """ Start TCP server in background thread """
         if self.running:
             return
         self.running = True
         self.thread = threading.Thread(target=self._server_loop, daemon=True, name="VRBridgeServerThread")
         self.thread.start()
-        print(f"📡 [VR Bridge] เริ่มต้น TCP Server ที่ {self.host}:{self.port} (รอ Unity เชื่อมต่อ...)")
+        print(f"📡 [VR Bridge] TCP Server started on {self.host}:{self.port} (waiting for Unity...)")
 
     def stop(self):
-        """ ปิด Server และปล่อย socket """
+        """ Stop server and release socket """
         self.running = False
         if self.client_sock:
             try:
@@ -69,12 +68,12 @@ class VRBridgeServer:
             except Exception:
                 pass
             self.server_sock = None
-        print("🛑 [VR Bridge] ปิด TCP Server เรียบร้อย")
+        print("🛑 [VR Bridge] TCP Server stopped")
 
     def send_feedback(self, actual_pos, force_n, speed_pct=100, actual_tcp_pose=None, safety_proximity=None):
         """
-        ส่งข้อมูลแรงบีบ ตำแหน่งจริง ระดับความเร็ว (Speed %) พิกัดจริง (Actual TCP Pose)
-        และอัตราส่วนความใกล้ขอบเขตความปลอดภัย (Safety Proximity Ratios) กลับไปให้ Unity
+        Send grip force, actual position, speed %, actual TCP pose,
+        and safety proximity ratios back to Unity.
         Format: STATUS <pos> <force> <speed%> <x> <y> <z> <rx> <ry> <rz> [<outer_r> <inner_r> <cyl_r> <spd_r>]
         """
         if not self.client_sock:
@@ -84,7 +83,7 @@ class VRBridgeServer:
             if actual_tcp_pose is not None and len(actual_tcp_pose) >= 6:
                 x, y, z, rx, ry, rz = actual_tcp_pose[:6]
                 base_msg = f"STATUS {int(actual_pos)} {float(force_n):.2f} {clamped_spd} {x:.4f} {y:.4f} {z:.4f} {rx:.4f} {ry:.4f} {rz:.4f}"
-                # Append safety proximity ratios if available (including Joint Rotation Limits)
+                # Append safety proximity ratios (including joint rotation limits)
                 if safety_proximity is not None:
                     o_r = safety_proximity.get("outer_ratio", 0.0)
                     i_r = safety_proximity.get("inner_ratio", 0.0)
@@ -104,7 +103,7 @@ class VRBridgeServer:
 
     def send_alert(self, level, message):
         """
-        ส่งข้อความแจ้งเตือนหรือ Error (ALERT WARNING/ERROR <msg>) ไปยัง Unity แบบ UTF-8
+        Send alert or error message (ALERT WARNING/ERROR <msg>) to Unity via UTF-8.
         """
         if not self.client_sock:
             return
@@ -124,7 +123,7 @@ class VRBridgeServer:
             pass
 
     def send_shake_status(self, is_shaking: bool):
-        """ ส่งข้อความ SHAKE START / SHAKE DONE ไปยัง Unity """
+        """ Send SHAKE START / SHAKE DONE to Unity """
         if not self.client_sock:
             return
         try:
@@ -141,13 +140,13 @@ class VRBridgeServer:
             self.server_sock.listen(1)
             self.server_sock.settimeout(1.0)
         except Exception as e:
-            print(f"❌ [VR Bridge] ไม่สามารถเปิด Port {self.port}: {e}")
+            print(f"❌ [VR Bridge] Failed to bind port {self.port}: {e}")
             self.running = False
             return
 
         while self.running:
             try:
-                # รอ Client เชื่อมต่อ
+                # Wait for client connection
                 try:
                     sock, addr = self.server_sock.accept()
                 except socket.timeout:
@@ -160,14 +159,14 @@ class VRBridgeServer:
                     self.client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 except Exception:
                     pass
-                print(f"\n🎉 [VR Bridge] Unity เชื่อมต่อสำเร็จจาก {addr[0]}:{addr[1]}!")
+                print(f"\n🎉 [VR Bridge] Unity connected from {addr[0]}:{addr[1]}!")
 
                 buffer = ""
                 while self.running:
                     try:
                         data = self.client_sock.recv(1024).decode("ascii")
                         if not data:
-                            print(f"\n⚠️ [VR Bridge] Unity หลุดการเชื่อมต่อ ({addr[0]})")
+                            print(f"\n⚠️ [VR Bridge] Unity disconnected ({addr[0]})")
                             break
 
                         buffer += data
@@ -232,7 +231,7 @@ class VRBridgeServer:
                                     except ValueError:
                                         pass
 
-                        # 1. ประมวลผลคำสั่ง 'GRIP' ล่าสุดในรอบนี้ (ตัดคำสั่งเก่าตกค้าง ป้องกัน Delay)
+                        # 1. Process latest GRIP command (discard stale ones to prevent delay)
                         if latest_grip_cmd:
                             parts = latest_grip_cmd.split()
                             if len(parts) >= 2:
@@ -250,7 +249,7 @@ class VRBridgeServer:
                                 except ValueError:
                                     pass
 
-                        # 2. ประมวลผลคำสั่ง 'MOVE' ล่าสุดในรอบนี้
+                        # 2. Process latest MOVE command
                         if latest_move_cmd:
                             parts = latest_move_cmd.split()
                             if len(parts) >= 4:
@@ -271,7 +270,7 @@ class VRBridgeServer:
                                 except ValueError:
                                     pass
 
-                        # 3. ประมวลผลคำสั่ง 'POSE' ล่าสุดในรอบนี้ (ตัดคำสั่งซ้ำซ้อนตกค้างใน TCP Buffer ทันที)
+                        # 3. Process latest POSE command (discard duplicates in TCP buffer)
                         if latest_pose_cmd:
                             parts = latest_pose_cmd.split()
                             if len(parts) >= 7:
@@ -314,14 +313,14 @@ class VRBridgeServer:
 
 
 # =========================================================================
-# โหมด Standalone Test: รันเดี่ยวๆ เพื่อเทสการขยับนิ้วใน Unity VR ได้ทันที
+# Standalone Test Mode: run solo to test VR pinch input from Unity
 # =========================================================================
 if __name__ == "__main__":
     print("==================================================")
     print("🤖 UR3e / Robotiq VR Hand Bridge Test Server")
     print("==================================================")
-    print("เซิร์ฟเวอร์นี้ใช้สำหรับทดสอบรับค่า Pinch จาก Unity Meta Quest")
-    print("โดยไม่ต้องต่อหุ่นยนต์จริง!")
+    print("This server receives pinch values from Unity Meta Quest")
+    print("without requiring a real robot connection!")
     print("==================================================")
 
     def on_grip(pos):
@@ -335,10 +334,10 @@ if __name__ == "__main__":
     server = VRBridgeServer(host="0.0.0.0", port=5555, on_grip_callback=on_grip)
     server.start()
 
-    print("\nกด Ctrl+C เพื่อหยุดเซิร์ฟเวอร์\n")
+    print("\nPress Ctrl+C to stop the server\n")
     try:
         while True:
             time.sleep(0.5)
     except KeyboardInterrupt:
-        print("\n\nกำลังปิดเซิร์ฟเวอร์...")
+        print("\n\nShutting down server...")
         server.stop()

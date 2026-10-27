@@ -4,14 +4,9 @@ using UnityEngine;
 namespace UR3eVR
 {
     /// <summary>
-    /// LeftHandHomeTrigger: เมนูควบคุมด่วนเมื่อจีบมือซ้าย (Left Hand Quick Action Menu)
-    /// 1.  SET HOME: สั่งหุ่นยนต์ UR3e กลับสู่ Safe Home พร้อม Reset จุด Center Point (Anchor) ใน Unity
-    /// 2.  /  GRIPPER LOCK: ล็อกระดับการหนีบของ Gripper ไม่ให้เปลี่ยนตามนิ้วมือขวา (กดซ้ำที่ Icon เพื่อปลดล็อก)
-    /// 
-    /// รองรับการสั่งการ 3 รูปแบบ:
-    /// - ใช้นิ้วชี้ขวาแตะที่ Icon โดยตรงในพื้นที่ 3D (Direct Touch / Poke)
-    /// - จีบมือซ้ายค้างไว้แล้วเอียงมือซ้าย ซ้าย-ขวา เพื่อเลือก (One-handed Tilt & Hold Dwell)
-    /// - กดปุ่มคีย์บอร์ด [H] สำหรับ Home และ [L] สำหรับ Gripper Lock (PC Editor Fallback)
+    /// LeftHandHomeTrigger: Quick action menu triggered by left hand pinch.
+    /// Commands UR3e robot to return to Safe Home and resets Unity center anchor.
+    /// Supports direct touch with right index, dwell hold, or keyboard [H].
     /// </summary>
     public class LeftHandHomeTrigger : MonoBehaviour
     {
@@ -32,19 +27,19 @@ namespace UR3eVR
         public Transform headTransform;
 
         [Header("Menu & Button Settings")]
-        [Tooltip("รัศมีของปุ่ม Icon แต่ละปุ่ม (เมตร)")]
+        [Tooltip("Radius of button icons (meters)")]
         public float buttonRadius = 0.035f; // 3.5 cm
 
-        [Tooltip("ระยะห่างจากปลายนิ้วชี้ขวาที่จะถือว่าแตะปุ่ม (เมตร)")]
+        [Tooltip("Touch distance threshold from right index fingertip (meters)")]
         public float touchThreshold = 0.040f; // 4.0 cm
 
-        [Tooltip("ระยะเวลาที่ต้องจีบมือซ้ายค้างเพื่อยืนยันแบบมือเดียว (วินาที)")]
+        [Tooltip("Dwell hold duration to trigger action (seconds)")]
         public float holdDuration = 1.3f;
 
-        [Tooltip("ระยะเวลาที่เมนูลอยค้างอยู่หลังปล่อยมือซ้าย (วินาที) เพื่อให้มือขวาเอื้อมมากดได้")]
+        [Tooltip("Menu stay duration after releasing pinch (seconds)")]
         public float menuStayDuration = 4.0f;
 
-        [Tooltip("เกณฑ์ตรวจจับการจีบมือซ้าย (0.0 ถึง 1.0)")]
+        [Tooltip("Pinch detection threshold (0.0 to 1.0)")]
         [Range(0.3f, 0.95f)]
         public float pinchThreshold = 0.55f;
 
@@ -99,7 +94,7 @@ namespace UR3eVR
                 }
             }
 
-            // ค้นหาทั้งมือซ้ายและมือขวา
+            // Find hands
             OVRHand[] hands = FindObjectsByType<OVRHand>(FindObjectsSortMode.None);
             foreach (var h in hands)
             {
@@ -136,7 +131,7 @@ namespace UR3eVR
 
         private void FindFingerTips()
         {
-            // ปลายนิ้วมือซ้าย
+            // Left fingertips
             if (leftOVRSkeleton != null && leftOVRSkeleton.IsInitialized)
             {
                 foreach (var bone in leftOVRSkeleton.Bones)
@@ -150,7 +145,7 @@ namespace UR3eVR
                 }
             }
 
-            // ปลายนิ้วชี้มือขวาสำหรับจิ้มแตะ
+            // Right index tip for touch
             if (rightOVRSkeleton != null && rightOVRSkeleton.IsInitialized)
             {
                 foreach (var bone in rightOVRSkeleton.Bones)
@@ -178,7 +173,7 @@ namespace UR3eVR
             isLeftHandTracked = (leftOVRHand != null && leftOVRHand.IsTracked);
             isRightHandTracked = (rightOVRHand != null && rightOVRHand.IsTracked);
 
-            // 1. ตรวจจับการจีบมือซ้าย
+            // 1. Detect left hand pinch
             bool pinchingNow = false;
             if (isLeftHandTracked)
             {
@@ -203,11 +198,11 @@ namespace UR3eVR
 
             isPinchingLeft = pinchingNow;
 
-            // 2. จัดการสถานะการเปิด/ปิดเมนู
+            // 2. Manage menu open/close timer
             if (isPinchingLeft)
             {
                 isMenuOpen = true;
-                menuTimer = menuStayDuration; // รีเซ็ตเวลานับถอยหลังการค้างเมนู
+                menuTimer = menuStayDuration; // Reset stay countdown
             }
             else if (menuTimer > 0f)
             {
@@ -233,18 +228,18 @@ namespace UR3eVR
                 }
             }
 
-            // 3. ปรับตำแหน่งและทิศทางของเมนู
+            // 3. Update menu transform and interactions
             if (isMenuOpen || isSuccessState)
             {
                 UpdateMenuTransform();
 
-                // 4. ตรวจจับการแตะด้วยนิ้วชี้ขวา (Direct Touch Interaction)
+                // 4. Check right index touch
                 CheckTouchInteraction();
 
-                // 5. ตรวจจับการเลือกแบบมือเดียวด้วยการเอียงมือซ้ายและจีบค้าง (One-handed Dwell)
+                // 5. Check one-handed dwell
                 CheckOneHandedDwell();
 
-                // 6. อัปเดตการแสดงผลและสีสันของปุ่มทั้งสอง
+                // 6. Update visuals
                 UpdateButtonsVisuals();
             }
             else
@@ -265,7 +260,7 @@ namespace UR3eVR
 
             Vector3 touchPos = rightIndexTip.position;
 
-            // ตรวจสอบระยะห่างกับปุ่ม Set Home
+            // Check distance to Home button
             if (homeButtonObj != null)
             {
                 float dHome = Vector3.Distance(touchPos, homeButtonObj.transform.position);
@@ -302,7 +297,7 @@ namespace UR3eVR
                     TriggerHomeAndRecenter();
                     dwellTimer = 0f;
                     dwellProgress = 1f;
-                    isArmed = false; // ป้องกันการเรียกซ้ำจนกว่าจะปล่อยมือ
+                    isArmed = false; // Prevent repeat until release
                 }
             }
             else
@@ -324,13 +319,13 @@ namespace UR3eVR
         {
             Debug.Log("[LeftActionMenu]  Trigger SET HOME & RECENTER");
 
-            // 1. สั่งหุ่นยนต์ UR3e กลับ Safe Home (ส่ง HOME ไป Python)
+            // 1. Send UR3e to Safe Home
             if (gripperBridge != null)
             {
                 gripperBridge.RequestHome();
             }
 
-            // 2. Reset จุด Center / Anchor ของมือขวาใน Unity ทันที
+            // 2. Reset right hand center anchor in Unity
             if (vrHandMover != null)
             {
                 vrHandMover.RecenterAnchor();
@@ -339,7 +334,7 @@ namespace UR3eVR
             isSuccessState = true;
             lastTriggeredAction = "HOME";
             successFeedbackTimer = 1.5f;
-            menuTimer = 1.5f; // แสดงผลสำเร็จแล้วค่อยปิด
+            menuTimer = 1.5f; // Show success briefly
         }
 
         public void ToggleGripperLock()
@@ -355,7 +350,7 @@ namespace UR3eVR
             isSuccessState = true;
             lastTriggeredAction = locked ? "LOCKED" : "UNLOCKED";
             successFeedbackTimer = 1.5f;
-            menuTimer = menuStayDuration; // ให้เมนูยังคงเปิดอยู่เพื่อให้ผู้ใช้เห็นสถานะ
+            menuTimer = menuStayDuration; // Keep menu open to show state
         }
 
         private void CreateMenuVisuals()
@@ -370,24 +365,24 @@ namespace UR3eVR
             if (unlitShader == null) unlitShader = Shader.Find("UR3eVR/URPHandOutline");
             if (unlitShader == null) unlitShader = Shader.Find("Sprites/Default");
 
-            // ==================== ปุ่ม Home (กึ่งกลาง) ====================
+            // Home button
             homeButtonObj = new GameObject("Btn_Home");
             homeButtonObj.transform.SetParent(menuRoot.transform);
             homeButtonObj.transform.localPosition = Vector3.zero;
 
-            // เส้นขอบวงกลม Background
+            // Background circle
             GameObject homeBgObj = new GameObject("BG_Circle");
             homeBgObj.transform.SetParent(homeButtonObj.transform);
             homeBgCircle = homeBgObj.AddComponent<LineRenderer>();
             SetupCircleLine(homeBgCircle, unlitShader, buttonRadius, 0.003f, new Color(0.1f, 0.5f, 0.7f, 0.4f));
 
-            // เส้น Progress Fill
+            // Progress fill line
             GameObject homeFillObj = new GameObject("Fill_Circle");
             homeFillObj.transform.SetParent(homeButtonObj.transform);
             homeFillCircle = homeFillObj.AddComponent<LineRenderer>();
             SetupFillLine(homeFillCircle, unlitShader, buttonRadius, 0.0045f);
 
-            // ข้อความ 3D Text
+            // 3D Text
             GameObject homeTextObj = new GameObject("Text_Home");
             homeTextObj.transform.SetParent(homeButtonObj.transform);
             homeTextObj.transform.localPosition = new Vector3(0f, 0f, -0.002f);
@@ -471,7 +466,7 @@ namespace UR3eVR
 
             menuRoot.transform.position = targetPos;
 
-            // หันหน้าเข้าหาศีรษะเสมอ (Billboard)
+            // Face user head (Billboard)
             if (headTransform != null)
             {
                 Vector3 lookDir = menuRoot.transform.position - headTransform.position;
@@ -487,7 +482,7 @@ namespace UR3eVR
             if (menuRoot == null) return;
             if (!menuRoot.activeSelf) menuRoot.SetActive(true);
 
-            // ==================== อัปเดตปุ่ม Home ====================
+            // Update Home button
             if (isSuccessState && lastTriggeredAction == "HOME")
             {
                 homeTextMesh.text = "HOMED!\n(Center Reset)";

@@ -5,12 +5,12 @@ using UnityEngine.UI;
 namespace UR3eVR
 {
     /// <summary>
-    /// UR3eStarterPoint: สร้างและจัดการ Starter Point / Home Point ของ UR3e ใน Unity VR Scene
-    /// - พิกัด Safe Home ของ UR3e: X=0.3053m (305mm), Y=-0.1313m (-131mm), Z=0.3108m (311mm)
-    /// - แสดงผลเป็น Hologram ทรงกลมและวงแหวนเลเซอร์ระนาบ 64 จุด
-    /// - ป้ายแสดงพิกัดแบบ World Space Canvas คมชัดสไตล์ Meta Horizon OS เห็นได้ทั้งสองตา (Stereo SPI Support)
-    /// - มี UI ลอยตัวเตือนให้วางมือที่จุด Home ก่อนเริ่มควบคุมหุ่นยนต์
-    /// - เมื่อวางมือที่ Home วงแหวนและ Beacon จะเปลี่ยนเป็นสีเขียวสด (Emerald Green) เพื่อยืนยันการเชื่อมต่อ
+    /// UR3eStarterPoint: Creates and manages the UR3e Starter/Home Point in Unity VR Scene.
+    /// - Safe Home: X=0.3053m, Y=-0.1313m, Z=0.3108m
+    /// - Renders as holographic sphere with 64-point laser ring
+    /// - World Space Canvas label with Meta Horizon OS style (Stereo SPI Support)
+    /// - Floating UI prompt to place hand at Home before starting control
+    /// - Turns emerald green when hand is docked at Home
     /// </summary>
     public class UR3eStarterPoint : MonoBehaviour
     {
@@ -20,24 +20,24 @@ namespace UR3eVR
         public Transform headTransform;
 
         [Header("Display Settings")]
-        [Tooltip("เปิด/ปิด การแสดงผลจุด Starter Point")]
+        [Tooltip("Show/hide the Starter Point")]
         public bool isVisible = true;
 
-        [Tooltip("แสดงเส้น Laser นำทางเชื่อมระหว่างมือกับจุด Starter Point")]
+        [Tooltip("Show laser tether line between hand and Starter Point")]
         public bool showTetherLine = true;
 
-        [Tooltip("แสดงแกนพิกัด 3 มิติ (Robot X=แดง, Y=เขียว, Z=น้ำเงิน)")]
+        [Tooltip("Show 3D coordinate axes (Robot X=red, Y=green, Z=blue)")]
         public bool showCoordinateAxes = true;
 
-        [Tooltip("แสดงป้ายข้อความ 3D ลอยตัว")]
+        [Tooltip("Show floating 3D text label")]
         public bool showLabel = false;
 
-        [Tooltip("ขนาดของจุด Starter Point")]
+        [Tooltip("Starter Point marker size")]
         [Range(0.01f, 0.15f)]
         public float markerScale = 0.04f;
 
         [Header("Home Zone Threshold")]
-        [Tooltip("ระยะรัศมีสำหรับตรวจจับว่ามืออยู่ที่จุด Home (เมตร)")]
+        [Tooltip("Radius for detecting hand at Home position (meters)")]
         public float homeZoneRadius = 0.045f;
 
         [Header("Live Status (Read Only)")]
@@ -86,7 +86,7 @@ namespace UR3eVR
                 headTransform = Camera.main.transform;
             }
 
-            // จัดวางตำแหน่งเริ่มต้นของ Home Point ตรงหน้าผู้ใช้ในระยะเอื้อมที่สะดวกสบาย
+            // Place Home Point in front of user at comfortable arm's reach
             if (vrHandMover != null && vrHandMover.isAnchorSet)
             {
                 transform.position = vrHandMover.anchorHandWorldPos;
@@ -121,7 +121,7 @@ namespace UR3eVR
         }
 
         /// <summary>
-        /// แจ้งเตือนเมื่อมือวางที่ Home สำเร็จและระบบสั่งเริ่มควบคุมหุ่นยนต์
+        /// Notify that hand was docked at Home and control is engaged
         /// </summary>
         public void NotifyEngaged()
         {
@@ -129,7 +129,7 @@ namespace UR3eVR
         }
 
         /// <summary>
-        /// อัปเดตจุด Anchor ให้ตรงกับตำแหน่งมือขวาใน World Space
+        /// Update anchor to match right hand world position
         /// </summary>
         public void UpdateAnchor(Vector3 worldPos, Quaternion headingRot, Vector3 robotPos)
         {
@@ -154,17 +154,17 @@ namespace UR3eVR
 
             bool isEngaged = (vrHandMover != null && vrHandMover.isTrackingEngaged);
 
-            // คำนวณระยะห่างระหว่างมือปัจจุบันกับจุด Starter Point (World Space ทั้งคู่)
+            // Distance between current hand and Starter Point (world space)
             Vector3 currentHandPos = (handTransform != null) ? handTransform.position : transform.position;
             distanceToHome = Vector3.Distance(currentHandPos, transform.position);
             isAtHome = (distanceToHome <= homeZoneRadius);
 
-            // ปรับสีและเอฟเฟกต์การแสดงผล (Home vs Not Engaged vs Moving)
+            // Update color and effects (Home vs Not Engaged vs Moving)
             float pulse = 0.85f + 0.15f * Mathf.Sin(Time.time * (isEngaged ? 3.5f : 6.0f));
             Color activeColor;
             if (isAtHome)
             {
-                activeColor = homeColor; // เขียวสดใสเมื่อมือวางอยู่ที่จุด Home
+                activeColor = homeColor; // Green when docked at Home
             }
             else if (isEngaged)
             {
@@ -172,7 +172,7 @@ namespace UR3eVR
             }
             else
             {
-                activeColor = pulseColor; // สีเหลืองกระพริบเตือนให้วางมือก่อนเริ่ม
+                activeColor = pulseColor; // Yellow pulse: place hand before starting
             }
             activeColor.a *= pulse;
 
@@ -187,7 +187,7 @@ namespace UR3eVR
                 ringLine.endColor = rc;
             }
 
-            // อัปเดตเส้น Tether Laser นำทางเชื่อมระหว่างมือกับจุด Home
+            // Update tether laser line between hand and Home point
             if (tetherLine != null)
             {
                 bool shouldShowLine = showTetherLine && (distanceToHome > 0.005f) && (handTransform != null);
@@ -203,14 +203,14 @@ namespace UR3eVR
                 }
             }
 
-            // ตรวจสอบและผูก CenterEyeCamera กับ World Space Canvas ต่อเนื่อง (แก้ไขภาพไม่ขึ้นตาขวา)
+            // Bind CenterEyeCamera to World Space Canvas (fix right-eye rendering)
             if (labelCanvas != null && (labelCanvas.worldCamera == null || !labelCanvas.worldCamera.gameObject.activeInHierarchy))
             {
                 FindCameras();
                 if (centerEyeCamera != null) labelCanvas.worldCamera = centerEyeCamera;
             }
 
-            // อัปเดตป้ายข้อความ World Space Billboard
+            // Update World Space billboard label
             if (labelObj != null)
             {
                 // Auto-hide label if hand is within 25cm to NEVER block the hand or teleoperation view
@@ -226,7 +226,7 @@ namespace UR3eVR
 
                     if (labelText != null)
                     {
-                        // แสดงผลข้อความเตือนให้วางมือที่จุด Home
+                        // Prompt to place hand at Home
                         if (!isEngaged)
                         {
                             if (isAtHome)
@@ -234,8 +234,8 @@ namespace UR3eVR
                                 float pct = Mathf.Clamp01((vrHandMover != null ? vrHandMover.currentDockTime : 0f) / Mathf.Max(0.01f, (vrHandMover != null ? vrHandMover.dockDwellTimeRequired : 0.35f)));
                                 labelText.text = string.Format(
                                     "<size=20><b><color=#00FF88>DOCKED AT HOME</color></b></size>\n" +
-                                    "<size=16><color=#FFFFFF>กำลังเชื่อมต่อระบบควบคุม... [{0:P0}]</color></size>\n" +
-                                    "<size=14><color=#00E5FF>กรุณาถือมือนิ่งไว้เพื่อเริ่ม</color></size>",
+                                    "<size=16><color=#FFFFFF>Connecting control system... [{0:P0}]</color></size>\n" +
+                                    "<size=14><color=#00E5FF>Hold hand still to engage</color></size>",
                                     pct
                                 );
                             }
@@ -244,7 +244,7 @@ namespace UR3eVR
                                 labelText.text = string.Format(
                                     "<size=18><b><color=#FFD54F>Home Point</color></b></size>\n" +
                                     "<size=16><color=#FFFFFF>Place Right Hand at Home Point to Engage</color></size>\n" +
-                                    "<size=14><color=#00E5FF>ระยะห่าง: {0:F1} cm  ▼  ▼  ▼</color></size>",
+                                    "<size=14><color=#00E5FF>Distance: {0:F1} cm  ▼  ▼  ▼</color></size>",
                                     distanceToHome * 100f
                                 );
                             }
@@ -253,14 +253,14 @@ namespace UR3eVR
                         {
                             labelText.text = 
                                 "<size=20><b><color=#00FF88>TELEOPERATION ACTIVE</color></b></size>\n" +
-                                "<size=16><color=#FFFFFF>หุ่นยนต์เริ่มขยับตามมือแล้ว!</color></size>\n" +
-                                "<size=14><color=#00E5FF>ขยับมือเพื่อควบคุมการผสมสารเคมีได้ทันที</color></size>";
+                                "<size=16><color=#FFFFFF>Robot is now tracking your hand!</color></size>\n" +
+                                "<size=14><color=#00E5FF>Move your hand to control the robot arm</color></size>";
                         }
                         else
                         {
                             string statusStr = isAtHome 
-                                ? "<color=#00FF88>★ AT HOME (จุดเริ่มต้น) ★</color>" 
-                                : string.Format("<color=#00E5FF>ห่าง Home: {0:F1} cm | ควบคุมต่อเนื่อง</color>", distanceToHome * 100f);
+                                ? "<color=#00FF88>★ AT HOME (Origin) ★</color>" 
+                                : string.Format("<color=#00E5FF>Dist from Home: {0:F1} cm | Active</color>", distanceToHome * 100f);
 
                             labelText.text = string.Format(
                                 "<size=18><b><color=#00E5FF>VR-HaptiLab (Home Point)</color></b></size>\n" +
@@ -276,7 +276,7 @@ namespace UR3eVR
                 }
             }
 
-            // อัปเดตการแสดงผลแกนพิกัด 3D
+            // Update 3D coordinate axes display
             if (axesRoot != null)
             {
                 axesRoot.SetActive(showCoordinateAxes);

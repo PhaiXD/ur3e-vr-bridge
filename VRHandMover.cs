@@ -39,23 +39,23 @@ namespace UR3eVR
         public LeftHandHomeTrigger leftHandHomeTrigger;
 
         [Header("Touch Controller / Remote Support")]
-        [Tooltip("เปิดให้ควบคุมด้วย Quest Touch Controller เมื่อผู้ใช้หยิบรีโมท")]
+        [Tooltip("Enable Quest Touch Controller teleoperation when user picks up remote")]
         public bool allowControllerTeleoperation = true;
-        [Tooltip("Transform ของคอนโทรลเลอร์ขวา (RightControllerAnchor)")]
+        [Tooltip("Right controller transform (RightControllerAnchor)")]
         public Transform rightControllerAnchor;
-        [Tooltip("สถานะว่ากำลังใช้งาน Touch Controller หรือไม่")]
+        [Tooltip("Whether Touch Controller is currently in use")]
         public bool isUsingController = false;
 
-        [Header("Left Touch Controller Actions (รีโมทซ้าย)")]
-        [Tooltip("เปิดใช้งานการควบคุมผ่านปุ่มที่รีโมทด้านซ้าย (X: Set Origin/Home, Y: Pause/Resume, Thumbstick: Shake Test Tube)")]
+        [Header("Left Touch Controller Actions")]
+        [Tooltip("Enable left controller buttons (X: Set Origin/Home, Y: Pause/Resume, Thumbstick: Shake)")]
         public bool enableLeftControllerActions = true;
 
         [Header("Teleoperation Pause State")]
-        [Tooltip("สถานะ Pause หยุดส่งพิกัดไปยังแขนกลชั่วคราว (กดปุ่ม Y บนรีโมทซ้ายเพื่อสลับ)")]
+        [Tooltip("Pause teleoperation (Y button on left controller to toggle)")]
         public bool isTeleoperationPaused = false;
 
         [Header("Auto Shake Test Tube State")]
-        [Tooltip("สถานะกำลังเขย่าสารอัตโนมัติ (กดก้านโยก Thumbstick ซ้าย)")]
+        [Tooltip("Auto shake test tube active (left thumbstick click)")]
         public bool isShakingActive = false;
         private bool wasShaking = false;
         private float shakeStartTime = 0f;
@@ -71,17 +71,17 @@ namespace UR3eVR
         public Vector3 maxTargetPos = new Vector3(0.58f, 0.35f, 0.65f);
 
         [Header("Physical Reach Clamping & Soft Deceleration (Robot Base Limits)")]
-        [Tooltip("ระยะเอื้อมสูงสุดจาก Robot Base (0, 0, 0) ป้องกันส่งเป้าหมายไปยังจุดที่หุ่นยนต์ไปไม่ถึง (เมตร)")]
+        [Tooltip("Max reach from robot base, prevents unreachable targets (meters)")]
         public float maxBaseReach = 0.58f;
-        [Tooltip("ระยะเริ่มชะลอความเร็วก่อนถึงขอบนอกสีแดง (เมตร)")]
+        [Tooltip("Deceleration zone before outer red boundary (meters)")]
         public float outerSlowZone = 0.04f;
 
-        [Tooltip("ระยะต่ำสุดจาก Robot Base (0, 0, 0) ป้องกัน Tool ชนฐาน (เมตร)")]
+        [Tooltip("Min reach from robot base, prevents tool-base collision (meters)")]
         public float minBaseReach = 0.28f;
-        [Tooltip("ระยะเริ่มชะลอความเร็วก่อนถึงขอบในสีเหลือง (เมตร)")]
+        [Tooltip("Deceleration zone before inner yellow boundary (meters)")]
         public float innerSlowZone = 0.06f;
 
-        [Tooltip("จำกัดความเร็วการเคลื่อนที่ของพิกัดเป้าหมายสูงสุด ป้องกันกระชากและแรงเฉื่อย (m/s)")]
+        [Tooltip("Max target position speed to prevent jerking and inertia (m/s)")]
         public float maxTargetLinearSpeed = 1.20f;
 
         [Header("Linear Axis Inversions")]
@@ -105,11 +105,11 @@ namespace UR3eVR
         [Range(0f, 0.95f)] public float rotSmoothing = 0.2f;
 
         [Header("Home Docking Engagement (Safety Interlock)")]
-        [Tooltip("ต้องการให้วางมือที่จุด Home ก่อนหุ่นยนต์ถึงจะเริ่มขยับตามมือ")]
+        [Tooltip("Require hand placement at Home before robot starts tracking")]
         public bool requireDockAtHomeToStart = false;
-        [Tooltip("สถานะว่าเชื่อมโยงและเริ่มควบคุมหุ่นยนต์แล้วหรือยัง (ต้องวางมือที่ Home ก่อน)")]
+        [Tooltip("Whether tracking is engaged (requires Home docking first)")]
         public bool isTrackingEngaged = false;
-        [Tooltip("เวลาที่ต้องวางมือแช่ไว้ที่ Home เพื่อยืนยันการเริ่มทำงาน (วินาที)")]
+        [Tooltip("Required dwell time at Home to confirm engagement (seconds)")]
         public float dockDwellTimeRequired = 0.35f;
         public float currentDockTime = 0.0f;
 
@@ -277,10 +277,10 @@ namespace UR3eVR
             Transform activeTransform = GetActiveTrackingTransform();
             if (activeTransform == null) return;
 
-            // 1. บันทึกตำแหน่ง World Position ของมือขวาจริง (Center Point ของมือขวา)
+            // 1. Record right hand world position
             anchorHandWorldPos = activeTransform.position;
 
-            // 2. แกนทิศทางของศีรษะ (Headset Horizontal Yaw)
+            // 2. Headset horizontal yaw direction
             Quaternion headYaw = Quaternion.identity;
             if (useHeadsetOrientation && headTransform != null)
             {
@@ -288,11 +288,11 @@ namespace UR3eVR
             }
             anchorHeadYaw = headYaw;
 
-            // 3. บันทึกการหมุนของมือเทียบกับทิศทางศีรษะ
+            // 3. Record hand rotation relative to head yaw
             anchorHandRot = Quaternion.Inverse(headYaw) * activeTransform.rotation;
             anchorHandPos = Quaternion.Inverse(headYaw) * (activeTransform.position - (headTransform != null ? headTransform.position : Vector3.zero));
 
-            // 4. เมื่อ Recenter หรือกด Home ให้รีเซ็ตจุดอ้างอิงของหุ่นยนต์กลับสู่ Safe Home เสมอ
+            // 4. On recenter/home, reset robot reference to safe home
             anchorRobotPos = homeRobotPos;
             anchorRobotRot = homeRobotRotAxisAngle;
 
@@ -304,7 +304,7 @@ namespace UR3eVR
             rotFilter.Reset();
             hasPrevState = false;
 
-            // 5. สั่งให้ StarterPoint อัปเดตพิกัดมาร์กเกอร์กลับมาที่มือขวาทันที
+            // 5. Update StarterPoint marker to current hand position
             if (starterPoint != null)
             {
                 starterPoint.UpdateAnchor(anchorHandWorldPos, headYaw, anchorRobotPos);
@@ -320,7 +320,7 @@ namespace UR3eVR
             Transform activeTransform = GetActiveTrackingTransform();
 
             // ========================================================
-            // LEFT TOUCH CONTROLLER ACTIONS (ปุ่มบนรีโมทซ้าย)
+            // LEFT TOUCH CONTROLLER ACTIONS
             // ========================================================
             if (enableLeftControllerActions)
             {
@@ -362,7 +362,7 @@ namespace UR3eVR
                     ToggleTeleoperationPause();
                 }
 
-                // 3. Shake Test Tube: เขย่าสารอัตโนมัติ 3 รอบ (Default: Left Stick Click)
+                // 3. Shake Test Tube: auto-shake 3 cycles (Default: Left Stick Click)
                 bool thumbstickPressed = false;
                 try { thumbstickPressed = VRKeybindManager.IsActionDown(VRAction.ShakeTestTube); } catch { }
                 if (!thumbstickPressed)
@@ -382,10 +382,10 @@ namespace UR3eVR
                 }
             }
 
-            // ตรวจสอบสถานะเขย่าสาร (Auto Shake): หากกำลังเขย่า ให้หยุดส่งพิกัดมือ และเมื่อเขย่าเสร็จให้ SyncAnchor ใหม่
+            // Auto Shake state: block hand tracking while shaking, SyncAnchor on completion
             bool isShakingNow = (gripperBridge != null && gripperBridge.isShaking);
 
-            // Safety timeout: หากเขย่าสารนานเกิน 15 วินาที (เช่น เซิร์ฟเวอร์หลุดหรือขัดข้อง) ให้ปลดล็อกและคืนการควบคุม
+            // Safety timeout: if shaking exceeds 15s (e.g. server disconnect), force resume
             if (wasShaking && (Time.time - shakeStartTime > 15f))
             {
                 if (gripperBridge != null) gripperBridge.isShaking = false;
@@ -407,7 +407,7 @@ namespace UR3eVR
                 Debug.Log("[VRHandMover] 🧪 Auto Shake complete! Teleoperation smoothly resumed.");
             }
 
-            // หากอยู่ในสถานะ Pause หรือกำลังเขย่าสาร: หยุดส่งพิกัดไปยังแขนกลทันที
+            // If paused or shaking: stop sending pose to robot arm
             if (isTeleoperationPaused || isShakingNow)
             {
                 if (gripperBridge != null)
@@ -451,7 +451,7 @@ namespace UR3eVR
             try { if (Input.GetKeyDown(recenterKey)) RecenterAnchor(); } catch { }
             try { if (Input.GetKeyDown(KeyCode.F)) ToggleFilter(); } catch { }
 
-            // ซิงค์ตำแหน่งจริงของหุ่นยนต์ตอนเริ่มต้นเชื่อมต่อครั้งแรก
+            // Sync live robot pose on first connection
             if (!hasSyncedInitialRobotPose && gripperBridge != null && gripperBridge.hasReceivedRobotPose)
             {
                 actualRobotPos = gripperBridge.actualRobotPos;
@@ -465,14 +465,14 @@ namespace UR3eVR
                 }
             }
 
-            // คำนวณ Headset Yaw ในระนาบแนวนอน
+            // Compute headset horizontal yaw
             Quaternion currentHeadYaw = Quaternion.identity;
             if (useHeadsetOrientation && headTransform != null)
             {
                 currentHeadYaw = Quaternion.Euler(0f, headTransform.eulerAngles.y, 0f);
             }
 
-            // กรอง One Euro Filter
+            // Apply One Euro Filter
             if (enableOneEuroFilter)
             {
                 posFilter.UpdateParams(posMinCutoff, posBeta, dCutoff);
@@ -486,7 +486,7 @@ namespace UR3eVR
             float dt = Time.deltaTime;
             if (dt <= 1e-6f) dt = 0.01f;
 
-            // 1. ตรวจสอบการวางมือที่จุด Home เพื่อปลดล็อกการควบคุม (Safety Interlock)
+            // 1. Check hand placement at Home to unlock control (Safety Interlock)
             if (starterPoint == null) starterPoint = FindAnyObjectByType<UR3eStarterPoint>();
             Vector3 homeTargetPos = (starterPoint != null) ? starterPoint.transform.position : anchorHandWorldPos;
             float distToHome = (starterPoint != null) ? Vector3.Distance(filteredWorldPos, homeTargetPos) : 999f;
@@ -516,7 +516,7 @@ namespace UR3eVR
                     currentDockTime = 0.0f;
                 }
 
-                // ขณะที่ยังไม่ได้วางมือที่ Home: ล็อกหุ่นยนต์ให้อยู่นิ่งที่ Safe Home เสมอ
+                // Not docked at Home yet: lock robot at safe home position
                 currentTargetPos = homeRobotPos;
                 currentTargetRotAxisAngle = homeRobotRotAxisAngle;
                 if (gripperBridge != null)
@@ -526,7 +526,7 @@ namespace UR3eVR
                         homeRobotRotAxisAngle.x, homeRobotRotAxisAngle.y, homeRobotRotAxisAngle.z
                     );
                 }
-                return; // ยังไม่เริ่มขยับตามมือ
+                return; // Not yet tracking hand
             }
 
             if (!isAnchorSet)
@@ -544,25 +544,25 @@ namespace UR3eVR
             }
 
             // ========================================================
-            // 1. TARGET POSE TRACKING (Closed-Loop แม่นยำระดับมิลลิเมตร)
+            // 1. TARGET POSE TRACKING (Closed-loop mm-precision)
             // ========================================================
             if (trackingMode == VRTrackingMode.TargetPose)
             {
-                // เวกเตอร์การเคลื่อนที่จากจุด Anchor World Space -> แปลงเข้าสู่แกนหน้าแว่น
-                // Z = พุ่งออกจากแว่น (Forward), X = ไปทางขวาของแว่น (Right), Y = ขึ้นบน (Up)
+                // Movement vector from anchor in head-relative frame
+                // Z = forward (from headset), X = right, Y = up
                 Vector3 worldDelta = filteredWorldPos - anchorHandWorldPos;
                 Quaternion referenceYaw = (useHeadsetOrientation && isAnchorSet) ? anchorHeadYaw : Quaternion.identity;
                 Vector3 handDelta = Quaternion.Inverse(referenceYaw) * worldDelta;
 
-                // Deadband ขั้นต่ำสำหรับตัด Hand Tremor ตอนมืออยู่นิ่ง
+                // Deadband to filter hand tremor when stationary
                 if (Mathf.Abs(handDelta.x) < 0.0008f) handDelta.x = 0f;
                 if (Mathf.Abs(handDelta.y) < 0.0008f) handDelta.y = 0f;
                 if (Mathf.Abs(handDelta.z) < 0.0008f) handDelta.z = 0f;
 
                 // Position Mapping (VR Head-Relative -> UR3e Base Frame)
-                // handDelta.z (พุ่งออกจากแว่น) -> Robot +X (Forward)
-                // -handDelta.x (ไปทางซ้ายของแว่น) -> Robot +Y (Left)
-                // handDelta.y (ขึ้นบน) -> Robot +Z (Up)
+                // handDelta.z (headset forward) -> Robot +X (Forward)
+                // -handDelta.x (headset left) -> Robot +Y (Left)
+                // handDelta.y (up) -> Robot +Z (Up)
                 float dX = handDelta.z * posSensitivity * (invertForwardBackward ? -1f : 1f);
                 float dY = -handDelta.x * posSensitivity * (invertLeftRight ? -1f : 1f);
                 float dZ = handDelta.y * posSensitivity * (invertUpDown ? -1f : 1f);
@@ -573,12 +573,12 @@ namespace UR3eVR
                 targetP.y = Mathf.Clamp(targetP.y, minTargetPos.y, maxTargetPos.y);
                 targetP.z = Mathf.Clamp(targetP.z, minTargetPos.z, maxTargetPos.z);
 
-                // 2. Proximity Soft Deceleration & Spherical Boundary Stopping จาก Robot Base (0, 0, 0)
-                // ชะลอความเร็วนุ่มนวลเมื่อเข้าใกล้วงแดงหรือวงเหลือง กำจัดแรงเฉื่อยและป้องกันหลุดขอบเขต 100%
+                // 2. Proximity soft deceleration & spherical boundary stopping from robot base
+                // Smooth slowdown near red/yellow boundaries, eliminates inertia overshoot
                 float distFromBase = targetP.magnitude;
                 Vector3 dirFromBase = (distFromBase > 1e-4f) ? targetP.normalized : Vector3.forward;
 
-                // ชะลอความเร็วเมื่อเข้าใกล้วงแดง (Outer Barrier)
+                // Decelerate near outer red barrier
                 float outerSlowStart = maxBaseReach - outerSlowZone;
                 if (distFromBase > outerSlowStart)
                 {
@@ -587,7 +587,7 @@ namespace UR3eVR
                     distFromBase = Mathf.Min(smoothDist, maxBaseReach);
                 }
 
-                // ชะลอความเร็วเมื่อเข้าใกล้วงเหลือง (Inner Barrier)
+                // Decelerate near inner yellow barrier
                 float innerSlowStart = minBaseReach + innerSlowZone;
                 if (distFromBase < innerSlowStart)
                 {
@@ -598,7 +598,7 @@ namespace UR3eVR
 
                 targetP = dirFromBase * distFromBase;
 
-                // 3. Slew-Rate Limiter (จำกัดความเร็วพิกัดเป้าหมาย ป้องกันกระชากและแรงเฉื่อยสะสม)
+                // 3. Slew-rate limiter (cap target speed, prevent jerking & inertia)
                 float frameDt = Time.deltaTime;
                 if (frameDt > 0f)
                 {
@@ -625,11 +625,11 @@ namespace UR3eVR
                     {
                         Vector3 vrRotVec = axis.normalized * (angleDeg * Mathf.Deg2Rad * rotSensitivity);
 
-                        // แก้ไขการหมุนข้อมือกลับด้านทุกแกน (Chirality Correction: Left-Handed Unity -> Right-Handed UR3e)
-                        // การแปลงเวกเตอร์การหมุนจาก VR Headset Frame -> UR3e Robot Base Frame:
-                        //   VR +Z (พุ่งออกจากแว่น) -> Robot +X (Roll): กลับเครื่องหมาย (-)
-                        //   VR -X (ไปทางซ้าย)     -> Robot +Y (Pitch): กลับเครื่องหมาย จาก -(-X) เป็น +X
-                        //   VR +Y (ชี้ขึ้น)        -> Robot +Z (Yaw): กลับเครื่องหมาย (-)
+                        // Chirality correction: Unity left-hand -> UR3e right-hand frame
+                        // VR Headset -> UR3e Base Frame mapping:
+                        //   VR +Z (forward) -> Robot +X (Roll): negate
+                        //   VR -X (left)    -> Robot +Y (Pitch): negate twice = +X
+                        //   VR +Y (up)      -> Robot +Z (Yaw): negate
                         float d_wx = -vrRotVec.z * (invertRoll ? -1f : 1f);
                         float d_wy = vrRotVec.x * (invertPitch ? -1f : 1f);
                         float d_wz = -vrRotVec.y * (invertYaw ? -1f : 1f);
@@ -694,7 +694,7 @@ namespace UR3eVR
 
                     smoothedRotVel = Vector3.Lerp(angVel * rotSensitivity, smoothedRotVel, rotSmoothing);
 
-                    // แก้การกลับด้านของข้อมือใน Velocity Mode
+                    // Chirality correction for velocity mode
                     float robotWx = -smoothedRotVel.z * (invertRoll ? -1f : 1f);
                     float robotWy = smoothedRotVel.x * (invertPitch ? -1f : 1f);
                     float robotWz = -smoothedRotVel.y * (invertYaw ? -1f : 1f);
@@ -718,7 +718,7 @@ namespace UR3eVR
         }
 
         /// <summary>
-        /// สลับเปิด/ปิด One Euro Filter แบบ Real-time (กดปุ่ม F)
+        /// Toggle One Euro Filter on/off at runtime (press F)
         /// </summary>
         public void ToggleFilter()
         {
@@ -742,7 +742,7 @@ namespace UR3eVR
         }
     
         /// <summary>
-        /// ปุ่ม X: Set origin point (ทั้ง center point ใน unity และ home ของแขนกล)
+        /// Button X: Set origin point (Unity center point + robot safe home)
         /// </summary>
         public void ExecuteSetOriginAndHome()
         {
@@ -764,7 +764,7 @@ namespace UR3eVR
         }
 
         /// <summary>
-        /// ปุ่ม Y: Pause / Resume การเคลื่อนไหวแขนกล (หยุดส่งพิกัด / กลับมาเคลื่อนไหวตาม)
+        /// Button Y: Pause/Resume robot arm teleoperation
         /// </summary>
         public void ToggleTeleoperationPause()
         {
@@ -788,8 +788,8 @@ namespace UR3eVR
         }
 
         /// <summary>
-        /// ซิงค์ Anchor ใหม่เมื่อ Unpause เพื่อไม่ให้แขนกลกระตุกหรือพุ่งตามมือ (Zero Jerk Resume)
-        /// อ่านตำแหน่งจริงของหุ่นยนต์จาก GripperBridge โดยตรง (ไม่ใช้ cached value ที่อาจ stale)
+        /// Sync anchor on unpause for zero-jerk resume.
+        /// Reads live robot pose from GripperBridge directly (avoids stale cache).
         /// </summary>
         public void SyncAnchorOnResume()
         {
@@ -848,7 +848,7 @@ namespace UR3eVR
         }
 
         /// <summary>
-        /// ปุ่มกดตรง Joy Stick: เขย่าสารอัตโนมัติ 3 รอบ (คว่ำ 180° และหงายกลับ -180°)
+        /// Thumbstick click: auto-shake test tube 3 cycles (flip 180° and back)
         /// </summary>
         public void ExecuteAutoShake()
         {
@@ -864,7 +864,7 @@ namespace UR3eVR
         }
 
         /// <summary>
-        /// ส่ง Haptic สั่นยืนยันที่รีโมทซ้าย
+        /// Trigger haptic feedback on left controller
         /// </summary>
         public void TriggerLeftControllerHaptic(float amplitude, float duration)
         {

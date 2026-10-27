@@ -36,26 +36,26 @@ namespace UR3eVR
         public VRHandMover vrHandMover;
 
         [Header("Network Settings")]
-        [Tooltip("IP Address ของเครื่องที่รัน test_move.py หรือ vr_bridge_server.py")]
+        [Tooltip("IP Address of machine running test_move.py or vr_bridge_server.py")]
         public string serverIp = "127.0.0.1";
 
-        [Tooltip("Port ของ VR Bridge Server (default: 5555)")]
+        [Tooltip("Port of VR Bridge Server (default: 5555)")]
         public int serverPort = 5555;
 
-        [Tooltip("อัตราการส่งข้อมูลสูงสุด (Hz) ปรับลดเพื่อแก้ปัญหา Delay")]
+        [Tooltip("Max send rate (Hz) to minimize latency")]
         [Range(5, 30)]
         public int sendRateHz = 50;
 
-        [Header("Significant Change Thresholds (ส่งเฉพาะจุดที่มีนัยสำคัญ)")]
-        [Tooltip("ระยะเคลื่อนที่ขั้นต่ำที่มีนัยสำคัญ (เมตร): เช่น 0.0015 = 1.5 mm หากขยับน้อยกว่านี้จะไม่ส่งซ้ำซ้อน")]
+        [Header("Significant Change Thresholds")]
+        [Tooltip("Minimum significant translation change (meters) to avoid redundant sends")]
         [Range(0.0005f, 0.01f)]
         public float posChangeThreshold = 0.0006f; // 1.5 mm
 
-        [Tooltip("องศาการหมุนข้อมือขั้นต่ำที่มีนัยสำคัญ (องศา): เช่น 0.8 องศา")]
+        [Tooltip("Minimum significant wrist rotation change (degrees)")]
         [Range(0.2f, 3.0f)]
         public float rotChangeThreshold = 0.35f; // 0.8 degrees
 
-        [Tooltip("ช่วงเวลาส่ง Heartbeat ซ้ำเมื่อมือนิ่งสนิท (วินาที)")]
+        [Tooltip("Heartbeat send interval when stationary (seconds)")]
         [Range(0.5f, 3.0f)]
         public float heartbeatIntervalSec = 0.12f;
 
@@ -64,11 +64,11 @@ namespace UR3eVR
         public PinchDetector pinchDetector;
 
         [Header("Gripper Settings")]
-        [Tooltip("Deadband ป้องกันการส่งค่าซ้ำๆ (ค่าเริ่มต้น 5)")]
+        [Tooltip("Deadband to suppress noisy grip values (default: 5)")]
         [Range(1, 15)]
         public int deadband = 5;
 
-        [Tooltip("เวลาคงที่ (วินาที) ก่อนเข้าสู่ Precision Mode (ลด deadband เหลือ 2)")]
+        [Tooltip("Hold duration (sec) before Precision Mode (reduces deadband to 2)")]
         public float precisionHoldThreshold = 1.0f;
 
         private float gripperHoldTime = 0f;
@@ -86,14 +86,14 @@ namespace UR3eVR
         public int currentSpeedPct = 100;
 
         [Header("Gripper Lock & Shake State")]
-        [Tooltip("สถานะล็อกระดับการหนีบของ Gripper")]
+        [Tooltip("Whether gripper position is locked")]
         public bool isGripperLocked = false;
         public int lockedGripPos = 0;
         public volatile bool isShaking = false;
         private volatile int pendingShakeLockAction = 0; // 0=none, 1=lock, 2=unlock
 
         [Header("Left Controller Grip Lock Interaction (Middle Finger Hold)")]
-        [Tooltip("ระยะเวลาที่ต้องกด Grip ค้างเพื่อ Toggle Lock (วินาที)")]
+        [Tooltip("Hold duration to toggle grip lock (seconds)")]
         public float gripLockHoldDuration = 0.85f;
         public float gripHoldTimer = 0f;
         public bool isGripLockArmed = true;
@@ -160,7 +160,7 @@ namespace UR3eVR
         }
 
         [Header("Auto-Tare (Calibrate Fz when opening fingers)")]
-        [Tooltip("ระดับตำแหน่งอ้านิ้วที่จะสั่ง Tare Fz อัตโนมัติ (default: 35)")]
+        [Tooltip("Gripper open threshold for auto-tare Fz (default: 35)")]
         [Range(10, 80)]
         public int autoTareThreshold = 35;
         public bool isCalibratedAtOpen = false;

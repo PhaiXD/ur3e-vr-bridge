@@ -78,12 +78,10 @@ namespace UR3eVR
 
         [Header("3D Stereo Settings (ZED Mini / Side-by-Side)")]
 
-        [Tooltip("สถานะว่ากำลังแสดงผลแบบ 3D Stereo (Side-by-Side) หรือไม่")]
-
+        [Tooltip("Whether 3D Stereo (Side-by-Side) display is active")]
         public bool isStereo3D = false;
 
-        [Tooltip("สลับภาพตาซ้ายและตาขวา (ในกรณีกล้องติดตั้งกลับด้าน)")]
-
+        [Tooltip("Swap left and right eye feeds if camera is mounted upside down")]
         public bool swapEyes = false;
 
         public Material stereoMaterial;

@@ -6,18 +6,18 @@ namespace UR3eVR
 {
     /// <summary>
     /// BhapticsGloveFeedback:
-    /// 1. ระบบสั่นตอบสนองแรงบีบ Gripper (Finger Haptic Feedback):
-    ///    - โหมดไม่มีเงื่อนไข (Unconditional Full Pinch): เมื่อจีบนิ้วสุดหรือปลายนิ้วชี้ชนกับนิ้วโป้งใน VR สั่งสั่น 100% เต็มพิกัดทันที
-    ///    - โหมดตัดการสั่นหลอน (Relaxed Hand Gating): เมื่อมืออยู่ในท่าปล่อยสบาย/อ้านิ้ว จะตัดการสั่นเป็น 0 ทันที ป้องกันแรงสั่นหลอนจากการขยับแขนกลในอากาศ
-    ///    - โหมดล็อกความเสถียร (Grip Contact Latch & Floor): เมื่อจับวัตถุ ระบบจะรักษาระดับการสั่นคงที่ ไม่ขาดๆ หายๆ แม้เซนเซอร์แรงจะกระเพื่อม
-    /// 2. ระบบสั่นเตือนขอบเขตความปลอดภัยที่ข้อมือ (Wrist Motor #5):
-    ///    - โซนเหลือง (Caution): สั่นเตือนเป็นจังหวะชีพจร 4 Hz
-    ///    - โซนแดง (Danger Limit): สั่นเตือนถี่และแรง 20 Hz (Urgent Buzz)
+    /// 1. Gripper pinch haptic feedback (Finger motors)
+    ///    - Unconditional full pinch: 100% intensity when index touches thumb
+    ///    - Relaxed hand gating: 0% intensity when hand is open/relaxed to prevent ghost vibrations
+    ///    - Grip contact latch & floor: maintains steady haptic floor while gripping
+    /// 2. Safety boundary wrist haptic alerts (Motor #5)
+    ///    - Caution zone: 4 Hz rhythmic pulse
+    ///    - Danger zone: 20 Hz urgent buzz
     /// </summary>
     public class BhapticsGloveFeedback : MonoBehaviour
     {
         [Header("Target Device")]
-        [Tooltip("เลือกถุงมือข้างที่จะให้สั่น (ค่าเริ่มต้นคือมือขวา GloveR)")]
+        [Tooltip("Target glove device (default: GloveR)")]
         public PositionType glovePosition = PositionType.GloveR;
 
         [Header("Component References")]
@@ -36,123 +36,123 @@ namespace UR3eVR
         [Tooltip("OVRHand reference (auto-detected if null)")]
         public OVRHand ovrHand;
 
-        [Header("Unconditional Full Pinch (จีบนิ้วสุด / นิ้วชนกัน สั่น 100% ทันที)")]
-        [Tooltip("เปิดใช้งานการสั่นเต็มที่ 100% ไม่มีเงื่อนไขเมื่อนิ้วชี้ชนกับนิ้วโป้ง")]
+        [Header("Unconditional Full Pinch (100% Intensity)")]
+        [Tooltip("Enable unconditional 100% haptic on full pinch")]
         public bool enableUnconditionalFullPinch = true;
 
-        [Tooltip("ระยะห่างระหว่างปลายนิ้วชี้และนิ้วโป้ง (cm) ที่ถือว่านิ้วชนกันสนิท")]
+        [Tooltip("Pinch contact distance threshold (cm)")]
         [Range(1.5f, 4.0f)]
         public float fullPinchDistanceCmThreshold = 2.6f;
 
-        [Tooltip("ระดับการจีบนิ้ว Normalized Pinch (0.0 - 1.0) ที่ถือว่าจีบสุด")]
+        [Tooltip("Normalized pinch threshold (0.0 - 1.0)")]
         [Range(0.70f, 0.98f)]
         public float fullNormalizedPinchThreshold = 0.85f;
 
-        [Tooltip("ระดับ Trigger ของ Controller ที่ถือว่ากดสุด")]
+        [Tooltip("Controller trigger threshold for full press")]
         [Range(0.70f, 1.0f)]
         public float fullTriggerThreshold = 0.88f;
 
-        [Tooltip("ความแรงการสั่นเมื่อจีบนิ้วสุด (%)")]
+        [Tooltip("Haptic intensity on full pinch (%)")]
         [Range(50, 100)]
         public int fullPinchIntensity = 100;
 
-        [Header("Hand State & Anti-Ghost Gating (ตัดการสั่นหลอนเมื่อไม่อยู่ในท่าจับ)")]
-        [Tooltip("ระดับการจีบต่ำกว่าค่านี้ถือว่ามืออ้า/ปล่อยสบาย (ตัดแรงสั่นจากแขนกลขยับในอากาศ 100%)")]
+        [Header("Hand State & Anti-Ghost Gating")]
+        [Tooltip("Pinch threshold below which hand is considered relaxed (cuts haptic to 0%)")]
         [Range(0.15f, 0.45f)]
         public float releasePinchThreshold = 0.32f;
 
-        [Tooltip("ระยะห่างระหว่างนิ้ว (cm) เกินค่านี้ถือว่าอ้านิ้วชัดเจน")]
+        [Tooltip("Fingertip distance (cm) exceeding this indicates open hand")]
         [Range(3.5f, 7.0f)]
         public float openDistanceCmThreshold = 4.5f;
 
-        [Header("Grip Stability & Latch (แก้ปัญหาสั่นขาดๆ หายๆ ขณะจับวัตถุ)")]
-        [Tooltip("ระดับแรงสั่นพยุงขั้นต่ำ (%) ขณะกำลังหนีบจับวัตถุ ป้องกันแรงสั่นวูบหายเมื่อเซนเซอร์ตก")]
+        [Header("Grip Stability & Latch")]
+        [Tooltip("Minimum hold floor intensity (%) while gripping to prevent dropouts")]
         [Range(20, 60)]
         public int gripHoldFloorIntensity = 35;
 
         [Header("Hysteresis Thresholds (Robot Force Sensor)")]
-        [Tooltip("แรงบีบขั้นต่ำ (N) ที่จะเริ่มเปิดระบบสั่นจากการสัมผัสวัตถุจริง")]
+        [Tooltip("Minimum grip force (N) to trigger contact haptic")]
         [Range(0.2f, 4.0f)]
         public float startForceN = 0.8f;
 
-        [Tooltip("แรงบีบขั้นต่ำ (N) ที่จะคลายระบบสั่น (Hysteresis)")]
+        [Tooltip("Release force threshold (N) for hysteresis")]
         [Range(0.05f, 2.0f)]
         public float stopForceN = 0.3f;
 
-        [Tooltip("แรงบีบสูงสุด (N) ที่จะให้ถุงมือสั่นเต็ม 100%")]
+        [Tooltip("Maximum grip force (N) for 100% intensity")]
         [Range(5.0f, 50.0f)]
         public float maxForceN = 25.0f;
 
-        [Tooltip("ความแรงการสั่นต่ำสุด (%) เมื่อเริ่มแตะสัมผัสวัตถุ")]
+        [Tooltip("Minimum contact intensity (%)")]
         [Range(5, 50)]
         public int minIntensity = 15;
 
-        [Tooltip("ความแรงการสั่นสูงสุด (%)")]
+        [Tooltip("Maximum contact intensity (%)")]
         [Range(50, 100)]
         public int maxIntensity = 100;
 
-        [Header("Smoothing Envelope (ความต่อเนื่องและนุ่มนวล)")]
-        [Tooltip("ความเร็วในการพุ่งของแรงสั่นเมื่อบีบ (Attack speed - ฉับพลัน คมชัด)")]
+        [Header("Smoothing Envelope")]
+        [Tooltip("Attack speed for grip haptic onset")]
         [Range(100f, 800f)]
         public float attackSpeed = 450f;
 
-        [Tooltip("ความเร็วในการลดแรงสั่นเมื่อคลายมือ (Release speed)")]
+        [Tooltip("Release speed for grip haptic decay")]
         [Range(50f, 400f)]
         public float releaseSpeed = 180f;
 
-        [Header("Active Motors on Glove (เลือกนิ้วที่ต้องการให้สั่น)")]
-        [Tooltip("นิ้วโป้ง (Thumb Tip)")]
+        [Header("Active Motors on Glove")]
+        [Tooltip("Thumb Tip")]
         public bool vibrateThumb = true;
 
-        [Tooltip("นิ้วชี้ (Index Tip)")]
+        [Tooltip("Index Tip")]
         public bool vibrateIndex = true;
 
-        [Tooltip("นิ้วกลาง (Middle Tip)")]
+        [Tooltip("Middle Tip")]
         public bool vibrateMiddle = false;
 
-        [Tooltip("นิ้วนาง (Ring Tip)")]
+        [Tooltip("Ring Tip")]
         public bool vibrateRing = false;
 
-        [Tooltip("นิ้วก้อย (Pinky Tip)")]
+        [Tooltip("Pinky Tip")]
         public bool vibratePinky = false;
 
-        [Tooltip("ฝ่ามือ (Palm)")]
+        [Tooltip("Palm")]
         public bool vibratePalm = false;
 
         [Header("Safety Boundary Warning (Wrist Motor #5)")]
-        [Tooltip("เปิดใช้งานการสั่นเตือนที่ข้อมือเมื่อเข้าใกล้วงเหลืองหรือวงแดง")]
+        [Tooltip("Enable wrist haptic warning near caution/danger boundaries")]
         public bool enableBoundaryWristWarning = true;
 
-        [Tooltip("ระดับเตือนสีเหลือง (Caution Threshold): เริ่มสั่นเตือนเป็นจังหวะเมื่อเข้าใกล้ขอบเขต")]
+        [Tooltip("Caution threshold for rhythmic pulse warning")]
         [Range(0.10f, 0.50f)]
         public float yellowCautionThreshold = 0.18f;
 
-        [Tooltip("ระดับเตือนสีแดง (Danger Threshold): สั่นเตือนแรงและถี่เมื่อใกล้ชนขอบเขต")]
+        [Tooltip("Danger threshold for urgent continuous buzz")]
         [Range(0.50f, 0.90f)]
         public float redDangerThreshold = 0.65f;
 
-        [Tooltip("ความแรงการสั่นต่ำสุดที่ข้อมือ (%) เมื่อเริ่มเข้าโซนเหลือง")]
+        [Tooltip("Minimum wrist alert intensity (%)")]
         [Range(10, 50)]
         public int minWristWarningIntensity = 30;
 
-        [Tooltip("ความแรงการสั่นสูงสุดที่ข้อมือ (%) เมื่อเข้าใกล้วงแดง")]
+        [Tooltip("Maximum wrist alert intensity (%)")]
         [Range(60, 100)]
         public int maxWristWarningIntensity = 100;
 
-        [Tooltip("เปิดระบบสั่นเป็นจังหวะชีพจร (Rhythmic Pulse 4 Hz) ในโซนเหลือง")]
+        [Tooltip("Enable 4 Hz rhythmic pulse in caution zone")]
         public bool enableYellowPulsing = true;
 
         [Header("Joint Rotation Limit Warning (Wrist Motor #5)")]
-        [Tooltip("เปิดใช้งานการสั่นเตือนที่ข้อมือเมื่อหมุนใกล้ครบรอบ/สุดขีดจำกัด (Rotation Limit Warning)")]
+        [Tooltip("Enable wrist alert near joint rotation limits")]
         public bool enableRotationLimitWristWarning = true;
         public bool isNearRotationLimitStatus = false;
 
         [Header("Haptic Timing")]
-        [Tooltip("ระยะเวลาการสั่นต่อรอบ (ms)")]
+        [Tooltip("Haptic frame duration (ms)")]
         [Range(50, 250)]
         public int pulseDurationMs = 120;
 
-        [Tooltip("ความถี่ในการส่งสัญญาณ haptic (Hz)")]
+        [Tooltip("Haptic update rate (Hz)")]
         [Range(15, 50)]
         public int updateRateHz = 25;
 
@@ -172,12 +172,12 @@ namespace UR3eVR
         public float userTipDistanceCm = 0f;
 
         [Header("Testing")]
-        [Tooltip("ติ๊กถูกเพื่อทดสอบสั่นแรงบีบของถุงมือทันทีใน Editor")]
+        [Tooltip("Test grip haptic in Editor")]
         public bool testVibration = false;
         [Range(0, 100)]
         public int testIntensity = 50;
 
-        [Tooltip("ติ๊กถูกเพื่อทดสอบสั่นเตือนที่ข้อมือทันทีใน Editor")]
+        [Tooltip("Test wrist alert in Editor")]
         public bool testWristWarning = false;
         [Range(0, 100)]
         public int testWristIntensity = 80;
@@ -268,7 +268,7 @@ namespace UR3eVR
                 currentGripForceN = gripperBridge.actualGripForce;
             }
 
-            // อ่านค่าระยะนิ้วและระดับการจีบสดจากเซนเซอร์ VR Hand Tracking
+            // Read live finger distance and pinch from VR Hand Tracking
             float pinchNormalized = 0f;
             float tipDistCm = 999f;
             bool isHandTracked = false;
@@ -287,7 +287,7 @@ namespace UR3eVR
             }
             else
             {
-                // Fallback กรณีใช้ Meta Touch Controller
+                // Fallback for Meta Touch Controller
                 float trig = OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, OVRInput.Controller.RTouch);
                 pinchNormalized = trig;
                 tipDistCm = Mathf.Lerp(10.0f, 1.8f, trig);
@@ -297,7 +297,7 @@ namespace UR3eVR
             userPinchPercent = pinchNormalized * 100f;
             userTipDistanceCm = tipDistCm;
 
-            // 1. ตรวจสอบเงื่อนไข "จีบนิ้วสุดหรือนิ้วชี้ชนกับนิ้วโป้ง" (Unconditional Full Pinch)
+            // 1. Unconditional Full Pinch check
             bool isFullPinch = false;
             if (enableUnconditionalFullPinch)
             {
@@ -338,7 +338,7 @@ namespace UR3eVR
             }
             isFullPinchActive = isFullPinch;
 
-            // 2. ตรวจสอบเงื่อนไข "มืออ้า/ปล่อยสบาย" (Relaxed Hand Gating - ตัดการสั่นหลอน 100%)
+            // 2. Relaxed hand gating (cuts ghost haptic to 0%)
             bool isHandRelaxedOpen = false;
             if (!isFullPinch)
             {
@@ -375,7 +375,7 @@ namespace UR3eVR
             }
             isHandRelaxedOpenStatus = isHandRelaxedOpen;
 
-            // 3. กำหนดความแรงของมอเตอร์นิ้วมือ (Target Grip Intensity)
+            // 3. Target grip intensity calculation
             int targetGripIntensity = 0;
 
             if (testVibration)
@@ -385,25 +385,25 @@ namespace UR3eVR
             }
             else if (isFullPinch)
             {
-                // [คำสั่งพิเศษของผู้ใช้]: จีบนิ้วสุดหรือนิ้วชี้ชนกับนิ้วโป้ง ให้สั่นแบบไม่มีเงื่อนไข (100% เต็มที่ ทันที!)
+                // Full pinch: 100% unconditional intensity
                 targetGripIntensity = fullPinchIntensity;
                 isHapticActive = true;
                 isGripLatched = true;
             }
             else if (isHandRelaxedOpen)
             {
-                // [แก้ปัญหาสั่นหลอน]: เมื่อมืออ้า/ปล่อยสบาย จะตัดการสั่นเป็น 0 ทันที ไม่ว่าแขนกลจะขยับแรงแค่ไหนในอากาศ
+                // Relaxed hand: cut haptic to 0 immediately
                 targetGripIntensity = 0;
                 isHapticActive = false;
                 isGripLatched = false;
-                currentSmoothedIntensity = 0f; // ตัดการสั่นทันที ไร้เสียงฮัมค้าง
+                currentSmoothedIntensity = 0f; // Cut haptic immediately
             }
             else
             {
-                // [แก้ปัญหาสั่นขาดๆ หายๆ]: อยู่ในสถานะกำลังหนีบ/จับวัตถุ พร้อมระบบ Grip Latch & Hold Floor
+                // Gripping state: Grip latch & hold floor
                 if (!isGripLatched)
                 {
-                    // เงื่อนไขเริ่มล็อกการสั่น (Contact Engagement)
+                    // Contact engagement
                     if (currentGripForceN >= startForceN)
                     {
                         isGripLatched = true;
@@ -420,7 +420,7 @@ namespace UR3eVR
                     float t = Mathf.Clamp01((currentGripForceN - stopForceN) / Mathf.Max(0.1f, maxForceN - stopForceN));
                     int calculatedIntensity = Mathf.RoundToInt(Mathf.Lerp(minIntensity, maxIntensity, t));
 
-                    // เสริมแรงสั่นพยุง (Grip Hold Floor): ตราบใดที่ยังไม่คลายนิ้ว สั่นต่อเนื่องไม่ต่ำกว่า floor intensity
+                    // Grip hold floor: maintain minimum vibration while holding
                     targetGripIntensity = Mathf.Max(gripHoldFloorIntensity, calculatedIntensity);
                 }
                 else
@@ -431,7 +431,7 @@ namespace UR3eVR
             }
             isGripLatchedStatus = isGripLatched;
 
-            // 4. Smooth Envelope สำหรับแรงบีบนิ้ว (ตอบสนองฉับพลันเมื่อหนีบ และชะลอนุ่มนวลเมื่อปล่อย)
+            // 4. Smooth envelope for grip haptic
             if (targetGripIntensity > currentSmoothedIntensity)
             {
                 currentSmoothedIntensity = Mathf.MoveTowards(currentSmoothedIntensity, targetGripIntensity, attackSpeed * Time.deltaTime);
@@ -449,14 +449,14 @@ namespace UR3eVR
             // =========================================================================
             float maxRatio = 0f;
 
-            // 1. ตรวจสอบค่า Approach Alpha จาก SafetyBoundaryVisualizer
+            // 1. Safety boundary approach alpha check
             if (safetyBoundary != null)
             {
                 maxRatio = Mathf.Max(maxRatio, safetyBoundary.outerApproachAlpha);
                 maxRatio = Mathf.Max(maxRatio, safetyBoundary.innerApproachAlpha);
             }
 
-            // 2. ตรวจสอบ Safety Ratios ที่ส่งมาจาก Python
+            // 2. Python safety ratios check
             if (gripperBridge != null)
             {
                 if (gripperBridge.safetyOuterRatio > 0.72f)
@@ -476,14 +476,14 @@ namespace UR3eVR
                 }
             }
 
-            // 2b. ตรวจสอบ Joint Rotation Limit (เมื่อหมุนใกล้ครบรอบ จาก Python gripperBridge)
+            // 2b. Joint rotation limit check
             if (gripperBridge != null && gripperBridge.safetyRotLimitRatio > 0.0f)
             {
                 float rotRatio = Mathf.Clamp01(gripperBridge.safetyRotLimitRatio);
                 maxRatio = Mathf.Max(maxRatio, rotRatio);
             }
 
-            // 3. ตรวจสอบระยะ Slow Zone จาก VRHandMover
+            // 3. VRHandMover slow zone check
             if (vrHandMover != null && vrHandMover.isAnchorSet)
             {
                 float d = vrHandMover.currentTargetPos.magnitude;
@@ -519,13 +519,13 @@ namespace UR3eVR
 
                 if (isNearRedZone)
                 {
-                    // 🔴 โซนใกล้วงแดง (Danger / Boundary Limit): สั่นแรงและถี่ต่อเนื่อง (Urgent Buzz 20 Hz)
+                    // Danger zone: urgent buzz (20 Hz)
                     float rapidPulse = (Mathf.Sin(Time.time * 20f * Mathf.PI) > -0.2f) ? 1.0f : 0.65f;
                     targetWristIntensity = Mathf.RoundToInt(baseIntensity * rapidPulse);
                 }
                 else
                 {
-                    // 🟡 โซนใกล้วงเหลือง (Caution / Warning): สั่นเป็นจังหวะชีพจรเตือน (Rhythmic Pulse 4 Hz)
+                    // Caution zone: rhythmic pulse (4 Hz)
                     if (enableYellowPulsing)
                     {
                         bool pulseOn = Mathf.Sin(Time.time * 8f * Mathf.PI) > 0.05f;
@@ -538,7 +538,7 @@ namespace UR3eVR
                 }
             }
 
-            // ตรวจสอบแรงสั่นเตือนข้อมือจากการหมุนใกล้ครบรอบโดยเฉพาะ (ยิ่งหมุนต่อ ยิ่งสั่นเตือนที่ข้อมือแรงขึ้น)
+            // Joint rotation limit wrist alert
             int rotWristIntensity = 0;
             if (enableRotationLimitWristWarning && enableBoundaryWristWarning && gripperBridge != null && gripperBridge.safetyRotLimitRatio > 0.05f)
             {
@@ -547,13 +547,13 @@ namespace UR3eVR
                 int baseRotInt = Mathf.RoundToInt(Mathf.Lerp(minWristWarningIntensity, maxWristWarningIntensity, tRot));
                 if (gripperBridge.safetyRotLimitRatio >= redDangerThreshold)
                 {
-                    // 🔴 หมุนใกล้ครบรอบมาก (< 10° เหลือ): สั่นเตือนฉุกเฉินถี่และแรง (Urgent Buzz 22 Hz)
+                    // Rotation limit danger (< 10 deg): urgent buzz (22 Hz)
                     float rapidPulse = (Mathf.Sin(Time.time * 22f * Mathf.PI) > -0.2f) ? 1.0f : 0.70f;
                     rotWristIntensity = Mathf.RoundToInt(baseRotInt * rapidPulse);
                 }
                 else
                 {
-                    // 🟡 เริ่มเข้าสู่โซนเตือน 10°-30°: สั่นชีพจรเตือนเป็นจังหวะ (Rhythmic Pulse 5 Hz)
+                    // Rotation limit caution (10-30 deg): rhythmic pulse (5 Hz)
                     if (enableYellowPulsing)
                     {
                         bool pulseOn = Mathf.Sin(Time.time * 10f * Mathf.PI) > 0.05f;
@@ -572,7 +572,7 @@ namespace UR3eVR
 
             targetWristIntensity = Mathf.Max(targetWristIntensity, rotWristIntensity);
 
-            // Smooth Envelope สำหรับมอเตอร์ข้อมือ
+            // Smooth envelope for wrist motor
             if (targetWristIntensity > currentSmoothedWristIntensity)
             {
                 currentSmoothedWristIntensity = Mathf.MoveTowards(currentSmoothedWristIntensity, targetWristIntensity, 450f * Time.deltaTime);
@@ -610,11 +610,11 @@ namespace UR3eVR
 
         private void SendGloveHaptic(int gripIntensity, int wristIntensity)
         {
-            // มอเตอร์ 8 ตัวของ bHaptics Glove:
+            // bHaptics Glove 8 motors:
             // 0: Thumb, 1: Index, 2: Middle, 3: Ring, 4: Pinky, 5: Wrist, 6: Palm Thumb, 7: Palm Pinky
             for (int i = 0; i < 8; i++) motorValues[i] = 0;
 
-            // นิ้วมือ (แรงบีบ Gripper)
+            // Finger motors (Gripper force)
             if (vibrateThumb) motorValues[0] = gripIntensity;
             if (vibrateIndex) motorValues[1] = gripIntensity;
             if (vibrateMiddle) motorValues[2] = gripIntensity;
@@ -626,7 +626,7 @@ namespace UR3eVR
                 motorValues[7] = gripIntensity;
             }
 
-            // มอเตอร์ 5: ข้อมือ (Wrist) - สั่นเตือนเข้าใกล้วงเหลือง/แดง!
+            // Motor 5: Wrist boundary alert
             if (enableBoundaryWristWarning)
             {
                 motorValues[5] = wristIntensity;
@@ -636,7 +636,7 @@ namespace UR3eVR
             {
                 BhapticsLibrary.PlayMotors((int)glovePosition, motorValues, pulseDurationMs);
 
-                // หากมีปลอกแขน (bHaptics Tactosy for Forearm/Wrist) ให้สั่งสั่นพร้อมกันด้วย
+                // Secondary forearm device sync (if connected)
                 if (wristIntensity > 0)
                 {
                     int forearmPos = (glovePosition == PositionType.GloveR) ? (int)PositionType.ForearmR : (int)PositionType.ForearmL;
@@ -652,15 +652,15 @@ namespace UR3eVR
         }
 
         /// <summary>
-        /// สั่นสะเทือนแบบจังหวะสั้น (Haptic Click Pulse) ที่นิ้วชี้และข้อมือเพื่อยืนยันการกดปุ่ม UI
+        /// Short haptic click pulse for UI button confirmation.
         /// </summary>
         public void TriggerClickPulse(int intensity = 60, int durationMs = 60)
         {
             try
             {
                 int[] clickMotors = new int[8];
-                clickMotors[1] = intensity; // นิ้วชี้
-                clickMotors[5] = intensity; // ข้อมือ
+                clickMotors[1] = intensity; // Index finger
+                clickMotors[5] = intensity; // Wrist
                 BhapticsLibrary.PlayMotors((int)glovePosition, clickMotors, durationMs);
             }
             catch { }

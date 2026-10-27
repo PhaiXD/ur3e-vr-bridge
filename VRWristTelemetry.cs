@@ -24,26 +24,26 @@ namespace UR3eVR
         public PinchDetector pinchDetector;
 
         [Header("Wrist Gaze Activation Settings")]
-        [Tooltip("มุมระหว่างหน้าปัดนาฬิกากับสายตาผู้ใช้ (องศา) ที่จะเริ่มแสดงผล")]
+        [Tooltip("Angle between watch face and user's gaze (degrees) to show HUD")]
         [Range(30f, 85f)]
         public float glanceAngleThreshold = 65f;
 
-        [Tooltip("มุมที่จะซ่อนหน้าจอเมื่อหันข้อมือออก")]
+        [Tooltip("Angle threshold to hide HUD when wrist turns away")]
         [Range(60f, 100f)]
         public float hideAngleThreshold = 80f;
 
         [Header("Controller Mode Placement (Left Remote)")]
-        [Tooltip("ตำแหน่งหน้าปัดบนข้อมือเมื่อถือรีโมทซ้าย (ลอยอยู่หลังด้ามรีโมท ไม่ซ้อนกับโมเดล)")]
+        [Tooltip("HUD offset on left wrist when holding controller (floats behind grip)")]
         public Vector3 controllerWristOffset = new Vector3(-0.015f, 0.075f, -0.15f);
         public Vector3 controllerRotationOffset = new Vector3(60f, -115f, -20f);
 
         [Header("Bare Hand Mode Placement (Optical Tracking)")]
-        [Tooltip("ตำแหน่งหน้าปัดบนข้อมือเมื่อเป็นมือเปล่า")]
+        [Tooltip("HUD offset on left wrist in bare-hand mode")]
         public Vector3 handWristOffset = new Vector3(0.00f, 0.055f, -0.06f);
         public Vector3 handRotationOffset = new Vector3(60f, -115f, -20f);
 
         [Header("Display Alignment")]
-        [Tooltip("ปรับหน้าจอให้หันเข้าหาสายตาผู้ใช้โดยอัตโนมัติเมื่อพลิกข้อมือมอง เพื่อให้อ่านง่าย 100% ตัวหนังสือไม่กลับด้าน")]
+        [Tooltip("Auto-rotate HUD to face user's eyes on wrist glance for full legibility")]
         public bool alignToEyesOnGlance = true;
 
         [Header("HUD Scale")]
